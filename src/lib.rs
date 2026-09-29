@@ -4,6 +4,7 @@ mod bounds;
 pub mod config;
 mod envelope;
 mod error;
+mod open;
 
 pub use config::{AccessMode, Compression, ConfigError, RocksDbConfig};
 pub use error::{RocksDbError, RocksDbResultExt};
