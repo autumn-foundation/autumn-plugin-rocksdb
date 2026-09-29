@@ -8,6 +8,7 @@
 //! - A read-only open refuses a configured column family that does not exist.
 //! - `autumn_cache` and `autumn_sessions` have a compaction filter. It removes expired envelopes.
 //! - Setup hooks run in order after the open. A failed hook stops the open.
+//! - On Unix, a new database directory and its new parents have mode `0700`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -62,7 +63,14 @@ pub(crate) fn open(config: &RocksDbConfig, setups: &[Setup]) -> Result<Opened, R
         options.set_env(&Env::mem_env()?);
         memory_path()
     } else {
-        PathBuf::from(&config.path)
+        let path = PathBuf::from(&config.path);
+        if !config.is_read_only() && config.create_if_missing && !path.exists() {
+            create_private_dir(&path).map_err(|err| RocksDbError::Database {
+                kind: rocksdb::ErrorKind::IOError,
+                detail: err.to_string(),
+            })?;
+        }
+        path
     };
     let names = column_family_names(config, &options, &path)?;
     let descriptors = names.iter().map(|name| {
@@ -85,6 +93,27 @@ pub(crate) fn open(config: &RocksDbConfig, setups: &[Setup]) -> Result<Opened, R
         db,
         column_families: names,
     })
+}
+
+/// Makes `path` and its missing parents. On Unix, only the owner can open the new directories.
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(path)
+}
+
+/// On Unix, lets only the owner open `dir`.
+pub(crate) fn make_private(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// Gives the database options of `config`.

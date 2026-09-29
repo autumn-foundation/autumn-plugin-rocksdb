@@ -5,9 +5,11 @@
 //! - An envelope is one version byte (`1`), an 8-byte big-endian expiry and the payload.
 //! - The expiry is Unix time in milliseconds. The expiry `0` means "no expiry".
 //! - An entry is expired when its expiry is at or before the current time.
+//! - A current time of `0` means the clock is before 1970. Then each entry with an expiry is expired.
 //! - [`expiry`] never gives `0`. A zero TTL gives an expiry 1 ms after `now`.
 //! - [`decode`] refuses a short envelope and an unknown version.
 //! - [`keep`] keeps an entry that does not decode. The compaction filter never removes unknown data.
+//! - [`keep`] keeps each entry when the current time is `0`.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -34,7 +36,8 @@ impl Envelope<'_> {
     /// Returns `true` if the entry is expired at `now_ms`.
     pub(crate) const fn is_expired(&self, now_ms: u64) -> bool {
         match self.expires_at {
-            Some(at) => at <= now_ms,
+            // A clock before 1970 gives 0. Expiry fails closed.
+            Some(at) => now_ms == 0 || at <= now_ms,
             None => false,
         }
     }
@@ -75,7 +78,7 @@ pub(crate) fn expiry(now_ms: u64, ttl: Duration) -> u64 {
 
 /// Returns `true` if the compaction filter keeps the entry at `now_ms`.
 pub(crate) fn keep(bytes: &[u8], now_ms: u64) -> bool {
-    decode(bytes).map_or(true, |envelope| !envelope.is_expired(now_ms))
+    now_ms == 0 || decode(bytes).map_or(true, |envelope| !envelope.is_expired(now_ms))
 }
 
 /// The current Unix time in milliseconds. A clock before 1970 gives `0`.

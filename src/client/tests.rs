@@ -690,3 +690,56 @@ async fn flush_keeps_the_database_open() {
     assert!(sst_files(&path) > 0);
     assert_eq!(db.get("k").await.unwrap(), Some(b"v".to_vec()));
 }
+
+#[tokio::test]
+async fn a_batch_above_the_byte_limit_is_refused() {
+    let db = with(|c| c.max_batch_bytes = 10).await;
+    db.batch()
+        .put("a", "1234")
+        .put("b", "1234")
+        .commit()
+        .await
+        .unwrap();
+    let err = db
+        .batch()
+        .put("a", "1234")
+        .put("b", "12345")
+        .commit()
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err,
+        RocksDbError::BatchTooLarge {
+            size: 11,
+            limit: 10
+        }
+    );
+    assert_eq!(db.get("b").await.unwrap(), Some(b"1234".to_vec()));
+}
+
+#[tokio::test]
+async fn entries_and_pages_hide_keys_and_values_in_debug_output() {
+    let db = memory().await;
+    db.put("secret-key", "secret-value").await.unwrap();
+    let page = db.scan().fetch().await.unwrap();
+    let text = format!("{page:?}");
+    assert!(!text.contains("secret"), "{text}");
+    assert!(text.contains("key_bytes: 10"), "{text}");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn new_directories_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("a").join("db");
+    let db = RocksDb::open(file_config(&path)).await.unwrap();
+    db.put("k", "v").await.unwrap();
+    let copy = dir.path().join("copy");
+    db.checkpoint(&copy).await.unwrap();
+    for dir in [&path, &copy] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{} has mode {mode:o}", dir.display());
+    }
+}

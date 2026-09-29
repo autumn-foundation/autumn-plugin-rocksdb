@@ -66,6 +66,8 @@ fn the_status_map() {
     let value = RocksDbError::ValueTooLarge { size: 2, limit: 1 };
     assert_eq!(key.status(), StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(value.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let batch = RocksDbError::BatchTooLarge { size: 2, limit: 1 };
+    assert_eq!(batch.status(), StatusCode::PAYLOAD_TOO_LARGE);
     for err in [
         database(ErrorKind::Corruption),
         database(ErrorKind::IOError),
@@ -126,4 +128,15 @@ fn not_supported_names_the_operation() {
         err.to_string(),
         "checkpoint is not supported for an in-memory database"
     );
+}
+
+#[test]
+fn debug_output_hides_the_detail() {
+    let err = RocksDbError::from(real_error());
+    let text = format!("{err:?}");
+    assert!(!text.contains("secret-name"), "{text}");
+    assert!(text.contains("InvalidArgument"), "{text}");
+    let source = serde_json::from_str::<u32>("\"secret-value\"").unwrap_err();
+    let text = format!("{:?}", RocksDbError::json("decode", &source));
+    assert!(!text.contains("secret-value"), "{text}");
 }

@@ -71,7 +71,7 @@ async fn the_stored_value_is_an_envelope_with_the_expiry() {
     store.save("id", data()).await.unwrap();
     let raw = db
         .internal_cf(SESSIONS_CF)
-        .get("id")
+        .get(session_key("id"))
         .await
         .unwrap()
         .unwrap();
@@ -87,9 +87,12 @@ async fn bad_data_gives_a_new_session() {
     let db = db_with(|_| {}).await;
     let store = RocksSessionStore::new(db.clone(), HOUR).unwrap();
     let sessions = db.internal_cf(SESSIONS_CF);
-    sessions.put("raw", "not an envelope").await.unwrap();
     sessions
-        .put("json", envelope::encode(b"[1, 2]", None))
+        .put(session_key("raw"), "not an envelope")
+        .await
+        .unwrap();
+    sessions
+        .put(session_key("json"), envelope::encode(b"[1, 2]", None))
         .await
         .unwrap();
     assert_eq!(store.load("raw").await.unwrap(), None);
@@ -160,4 +163,34 @@ async fn sessions_survive_a_restart() {
     db.close().await;
     let store = RocksSessionStore::new(RocksDb::open(config).await.unwrap(), HOUR).unwrap();
     assert_eq!(store.load("id").await.unwrap(), Some(data()));
+}
+
+#[tokio::test]
+async fn the_store_keeps_a_hash_of_the_id_and_not_the_id() {
+    let db = db_with(|_| {}).await;
+    let store = RocksSessionStore::new(db.clone(), HOUR).unwrap();
+    store.save("secret-session-id", data()).await.unwrap();
+    let keys = db
+        .with_db(|db| {
+            let cf = db.cf_handle(SESSIONS_CF).expect("open");
+            db.iterator_cf(cf, rocksdb::IteratorMode::Start)
+                .map(|item| item.map(|(key, _)| key.to_vec()))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .await
+        .unwrap();
+    assert_eq!(keys, [session_key("secret-session-id").to_vec()]);
+    assert_eq!(keys[0].len(), 32);
+}
+
+#[test]
+fn session_keys_are_sha256() {
+    // SHA-256 of "abc", from FIPS 180-2.
+    let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let hex = session_key("abc").iter().fold(String::new(), |mut hex, b| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{b:02x}");
+        hex
+    });
+    assert_eq!(hex, expected);
 }

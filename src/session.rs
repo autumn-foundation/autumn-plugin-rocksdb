@@ -7,6 +7,7 @@
 //! - A load or destroy of an ID above the key size limit is not an error. A save of it gives an error.
 //! - Data that does not decode gives `None`, so the user gets a new session.
 //! - Before the plugin binds the store, and after the shutdown, each call gives an error.
+//! - The key is the SHA-256 hash of the session ID. The files on disk do not hold the IDs.
 //! - Errors and logs never show the session ID or the session data.
 
 use std::collections::HashMap;
@@ -14,6 +15,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use autumn_web::session::{SessionStore, SessionStoreError};
+use sha2::{Digest, Sha256};
 
 use crate::client::RocksDb;
 use crate::envelope;
@@ -74,11 +76,32 @@ impl RocksSessionStore {
     }
 }
 
+/// The key of a session: the SHA-256 hash of its ID.
+pub(crate) fn session_key(id: &str) -> [u8; 32] {
+    Sha256::digest(id.as_bytes()).into()
+}
+
+/// Refuses an ID above the key size limit. No ID has to be that long.
+fn check_id(db: &RocksDb, id: &str) -> Result<(), RocksDbError> {
+    let limit = db.config().max_key_bytes;
+    if id.len() > limit {
+        return Err(RocksDbError::KeyTooLarge {
+            size: id.len(),
+            limit,
+        });
+    }
+    Ok(())
+}
+
 impl SessionStore for RocksSessionStore {
     async fn load(&self, id: &str) -> Result<Option<HashMap<String, String>>, SessionStoreError> {
         let bound = self.bound("load")?;
+        if check_id(&bound.db, id).is_err() {
+            // No session can have this ID. A long cookie must not fail each request.
+            return Ok(None);
+        }
         let sessions = bound.db.internal_cf(SESSIONS_CF);
-        let stored = match sessions.get(id).await {
+        let stored = match sessions.get(session_key(id)).await {
             Ok(stored) => stored,
             // No session can have this ID. A long cookie must not fail each request.
             Err(RocksDbError::KeyTooLarge { .. }) => None,
@@ -105,6 +128,7 @@ impl SessionStore for RocksSessionStore {
 
     async fn save(&self, id: &str, data: HashMap<String, String>) -> Result<(), SessionStoreError> {
         let bound = self.bound("save")?;
+        check_id(&bound.db, id).map_err(|err| SessionStoreError::backend("save", err))?;
         let payload = serde_json::to_vec(&data).map_err(|err| {
             SessionStoreError::backend("save", RocksDbError::json("encode", &err))
         })?;
@@ -112,17 +136,25 @@ impl SessionStore for RocksSessionStore {
         bound
             .db
             .internal_cf(SESSIONS_CF)
-            .put(id, envelope::encode(&payload, Some(expires_at)))
+            .put(
+                session_key(id),
+                envelope::encode(&payload, Some(expires_at)),
+            )
             .await
             .map_err(|err| SessionStoreError::backend("save", err))
     }
 
     async fn destroy(&self, id: &str) -> Result<(), SessionStoreError> {
         let bound = self.bound("destroy")?;
-        match bound.db.internal_cf(SESSIONS_CF).delete(id).await {
-            Ok(()) | Err(RocksDbError::KeyTooLarge { .. }) => Ok(()),
-            Err(err) => Err(SessionStoreError::backend("destroy", err)),
+        if check_id(&bound.db, id).is_err() {
+            return Ok(());
         }
+        bound
+            .db
+            .internal_cf(SESSIONS_CF)
+            .delete(session_key(id))
+            .await
+            .map_err(|err| SessionStoreError::backend("destroy", err))
     }
 }
 

@@ -120,6 +120,8 @@ pub struct RocksDbConfig {
     pub max_scan_entries: usize,
     /// The most key and value bytes in one scan page.
     pub max_scan_bytes: usize,
+    /// The most key and value bytes in one batch.
+    pub max_batch_bytes: usize,
     /// If `true`, each write waits until the write-ahead log is on disk.
     pub sync_writes: bool,
     /// If `true`, the plugin installs [`RocksCache`](crate::RocksCache) as the app cache.
@@ -161,6 +163,7 @@ impl Default for RocksDbConfig {
             max_value_bytes: 16 * 1024 * 1024,
             max_scan_entries: 1_000,
             max_scan_bytes: 16 * 1024 * 1024,
+            max_batch_bytes: 64 * 1024 * 1024,
             sync_writes: false,
             cache: false,
             sessions: false,
@@ -200,6 +203,7 @@ const LEAVES: &[(&str, Kind)] = &[
     ("max_value_bytes", Kind::Unsigned),
     ("max_scan_entries", Kind::Unsigned),
     ("max_scan_bytes", Kind::Unsigned),
+    ("max_batch_bytes", Kind::Unsigned),
     ("sync_writes", Kind::Bool),
     ("cache", Kind::Bool),
     ("sessions", Kind::Bool),
@@ -288,6 +292,15 @@ impl RocksDbConfig {
         if self.path.trim().is_empty() {
             return fail("path", "must be a directory path or `:memory:`");
         }
+        if self.path.trim() != self.path {
+            return fail("path", "must not start or end with white space");
+        }
+        if self.path.eq_ignore_ascii_case(IN_MEMORY) && !self.is_in_memory() {
+            return fail(
+                "path",
+                "must be `:memory:` in lower case for an in-memory database",
+            );
+        }
         if self.is_read_only() && self.is_in_memory() {
             return fail("access_mode", "must not be `read_only` for `:memory:`");
         }
@@ -317,6 +330,9 @@ impl RocksDbConfig {
         }
         if self.max_scan_bytes == 0 {
             return fail("max_scan_bytes", "must be 1 or more");
+        }
+        if self.max_batch_bytes == 0 {
+            return fail("max_batch_bytes", "must be 1 or more");
         }
         if self.session_ttl_secs == Some(0) {
             return fail("session_ttl_secs", "must be 1 or more");

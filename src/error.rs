@@ -6,7 +6,8 @@
 //! - The error text shows the kind only. [`RocksDbError::detail`] gives the full message.
 //!   A RocksDB message can hold a file path. A JSON message can hold a value.
 //! - A timeout gives HTTP 504. A shutdown and a busy database give 503.
-//!   A key or value above the size limit gives 413. All other errors give 500.
+//!   A key, value or batch above the size limit gives 413. All other errors give 500.
+//! - The `Debug` output is the error text. It does not show the full message.
 //! - A timeout and the RocksDB kinds `Busy`, `TryAgain` and `TimedOut` are retryable.
 
 use std::time::Duration;
@@ -18,7 +19,9 @@ use rocksdb::ErrorKind;
 use crate::config::ConfigError;
 
 /// An error from the plugin.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+///
+/// The `Debug` output is the error text. It does not show `detail`.
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum RocksDbError {
     /// The configuration is not valid.
@@ -63,6 +66,15 @@ pub enum RocksDbError {
     #[non_exhaustive]
     ValueTooLarge {
         /// The value size.
+        size: usize,
+        /// The limit.
+        limit: usize,
+    },
+    /// The keys and values of a batch have more bytes than the limit.
+    #[error("the batch has {size} bytes: the limit is {limit}")]
+    #[non_exhaustive]
+    BatchTooLarge {
+        /// The batch size.
         size: usize,
         /// The limit.
         limit: usize,
@@ -120,6 +132,15 @@ pub enum RocksDbError {
     /// The app does not have the plugin.
     #[error("the RocksDB plugin is not installed: add `RocksDbPlugin` to the app")]
     NotInstalled,
+}
+
+impl std::fmt::Debug for RocksDbError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The derived output shows `detail`. It can hold a file path or a value.
+        f.debug_tuple("RocksDbError")
+            .field(&format_args!("{self}"))
+            .finish()
+    }
 }
 
 impl From<rocksdb::Error> for RocksDbError {
@@ -187,7 +208,9 @@ impl RocksDbError {
                     | ErrorKind::ShutdownInProgress,
                 ..
             } => StatusCode::SERVICE_UNAVAILABLE,
-            Self::KeyTooLarge { .. } | Self::ValueTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            Self::KeyTooLarge { .. } | Self::ValueTooLarge { .. } | Self::BatchTooLarge { .. } => {
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

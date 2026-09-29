@@ -66,13 +66,24 @@ pub struct Keyspace {
 }
 
 /// One key and its value.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// The `Debug` output shows the sizes, not the bytes.
+#[derive(Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Entry {
     /// The key.
     pub key: Vec<u8>,
     /// The value.
     pub value: Vec<u8>,
+}
+
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Entry")
+            .field("key_bytes", &self.key.len())
+            .field("value_bytes", &self.value.len())
+            .finish()
+    }
 }
 
 impl Entry {
@@ -305,6 +316,7 @@ impl RocksDb {
     /// Makes a consistent copy of the database in `dir`, for example for a backup.
     ///
     /// `dir` must not exist. The copy uses hard links when it can.
+    /// On Unix, only the owner can open `dir`. The copy holds all data, so keep it safe.
     ///
     /// # Errors
     ///
@@ -318,7 +330,10 @@ impl RocksDb {
         let dir = dir.as_ref().to_path_buf();
         self.call(move |db| {
             rocksdb::checkpoint::Checkpoint::new(db)?.create_checkpoint(&dir)?;
-            Ok(())
+            open::make_private(&dir).map_err(|err| RocksDbError::Database {
+                kind: rocksdb::ErrorKind::IOError,
+                detail: err.to_string(),
+            })
         })
         .await
     }
@@ -878,6 +893,10 @@ impl Batch {
                 db.check_value(value)?;
                 bytes = bytes.saturating_add(value.len());
             }
+        }
+        let limit = db.config().max_batch_bytes;
+        if bytes > limit {
+            return Err(RocksDbError::BatchTooLarge { size: bytes, limit });
         }
         if writes.is_empty() {
             return if db.inner.shutting_down.load(Ordering::Acquire) {

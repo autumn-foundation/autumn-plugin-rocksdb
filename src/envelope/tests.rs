@@ -107,3 +107,17 @@ proptest! {
         let _ = keep(&bytes, 0);
     }
 }
+
+#[test]
+fn an_unknown_clock_expires_each_entry_with_an_expiry() {
+    // `now_ms` gives 0 for a clock before 1970. Expiry then fails closed.
+    let bytes = encode(b"", Some(u64::MAX));
+    assert!(decode(&bytes).unwrap().is_expired(0));
+    let bytes = encode(b"", None);
+    assert!(!decode(&bytes).unwrap().is_expired(0));
+}
+
+#[test]
+fn keep_keeps_each_entry_when_the_clock_is_unknown() {
+    assert!(keep(&encode(b"", Some(5)), 0));
+}

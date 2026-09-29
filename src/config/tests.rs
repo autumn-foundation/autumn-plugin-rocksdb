@@ -46,6 +46,7 @@ fn defaults_are_safe() {
     assert!(!config.sessions);
     assert_eq!(config.session_ttl_secs, None);
     assert_eq!(config.cache_ttl_secs, 86_400);
+    assert_eq!(config.max_batch_bytes, 64 * 1024 * 1024);
     assert!(config.health_check);
     assert!(config.flush_on_shutdown);
     assert_eq!(config.bloom_filter_bits, 10);
@@ -257,6 +258,10 @@ fn validate_names_the_key() {
     let cases: Vec<(&str, Change)> = vec![
         ("rocksdb.path", Box::new(|c| c.path = " ".into())),
         (
+            "rocksdb.max_batch_bytes",
+            Box::new(|c| c.max_batch_bytes = 0),
+        ),
+        (
             "rocksdb.access_mode",
             Box::new(|c| c.access_mode = AccessMode::ReadOnly),
         ),
@@ -295,6 +300,13 @@ fn validate_names_the_key() {
             Box::new(|c| c.max_scan_entries = 100_001),
         ),
         ("rocksdb.max_scan_bytes", Box::new(|c| c.max_scan_bytes = 0)),
+    ];
+    assert_names(cases);
+}
+
+#[test]
+fn validate_names_the_tuning_key() {
+    let cases: Vec<(&str, Change)> = vec![
         (
             "rocksdb.session_ttl_secs",
             Box::new(|c| c.session_ttl_secs = Some(0)),
@@ -415,4 +427,14 @@ fn session_ttl_is_never_zero() {
         RocksDbConfig::default().session_ttl(0),
         Duration::from_secs(1)
     );
+}
+
+#[test]
+fn validate_refuses_near_misses_of_memory() {
+    let cases: Vec<(&str, Change)> = vec![
+        ("rocksdb.path", Box::new(|c| c.path = ":memory:\n".into())),
+        ("rocksdb.path", Box::new(|c| c.path = " data".into())),
+        ("rocksdb.path", Box::new(|c| c.path = ":MEMORY:".into())),
+    ];
+    assert_names(cases);
 }
