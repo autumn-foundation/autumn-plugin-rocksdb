@@ -45,6 +45,7 @@ fn defaults_are_safe() {
     assert!(!config.cache);
     assert!(!config.sessions);
     assert_eq!(config.session_ttl_secs, None);
+    assert_eq!(config.cache_ttl_secs, 86_400);
     assert!(config.health_check);
     assert!(config.flush_on_shutdown);
     assert_eq!(config.bloom_filter_bits, 10);
@@ -81,6 +82,7 @@ max_scan_entries = 10
 max_scan_bytes = 5000
 sync_writes = true
 session_ttl_secs = 60
+cache_ttl_secs = 120
 health_check = false
 flush_on_shutdown = false
 block_cache_bytes = 1048576
@@ -104,6 +106,7 @@ bloom_filter_bits = 0
     assert_eq!(config.max_scan_bytes, 5000);
     assert!(config.sync_writes);
     assert_eq!(config.session_ttl_secs, Some(60));
+    assert_eq!(config.cache_ttl_secs, 120);
     assert!(!config.health_check);
     assert!(!config.flush_on_shutdown);
     assert_eq!(config.block_cache_bytes, Some(1_048_576));

@@ -3,11 +3,14 @@
 //! # Contract
 //!
 //! - Values are JSON bytes in a TTL envelope. [`get_cached`](autumn_web::cache::get_cached) decodes them.
-//! - `insert_value` stores [`RawCacheBytes`], `String`, `i64` and `i32` values with no expiry. It ignores other types.
+//! - `insert_value` stores [`RawCacheBytes`], `String`, `i64` and `i32` values. It ignores other types.
 //! - `insert_raw_bytes` stores the bytes with the TTL. A read after the expiry is a miss.
+//! - Each entry expires. `cache_ttl_secs` is the longest TTL and the TTL of an entry without one.
 //! - `clear` removes each entry in one range delete. Cache keys are UTF-8, so no key has the byte `0xFF`.
 //! - A key or value above the size limit is not stored. A read of such a key is a miss.
 //! - Errors, a shutdown and bad envelopes give a miss or no write. The cache never panics and never logs keys.
+//! - Each call takes a call slot without a wait. If no slot is free, a read is a miss and a write does nothing.
+//! - Writes do not wait for a RocksDB write stall. A stalled write does nothing. Writes use `sync_writes`.
 //! - On a multi-thread Tokio runtime, each call runs in `block_in_place`.
 //! - The fill lock is not supported. One process owns the database.
 
@@ -16,7 +19,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use autumn_web::cache::{Cache, RawCacheBytes};
-use rocksdb::ColumnFamily;
+use rocksdb::{ColumnFamily, WriteOptions};
 use tokio::runtime::RuntimeFlavor;
 
 use crate::client::RocksDb;
@@ -56,7 +59,7 @@ impl RocksCache {
         &self,
         work: impl FnOnce(&Database, &ColumnFamily) -> Result<T, rocksdb::Error>,
     ) -> Option<T> {
-        let db = self.db.database()?;
+        let (_slot, db) = self.db.try_slot()?;
         let cf = db.cf_handle(CACHE_CF)?;
         match blocking(|| work(&db, cf)) {
             Ok(value) => Some(value),
@@ -72,13 +75,23 @@ impl RocksCache {
         key.len() <= config.max_key_bytes && value.len() <= config.max_value_bytes
     }
 
+    /// The write options: no wait for a write stall, and `sync_writes`.
+    fn write_options(&self) -> WriteOptions {
+        let mut options = WriteOptions::default();
+        options.set_no_slowdown(true);
+        options.set_sync(self.db.config().sync_writes);
+        options
+    }
+
     fn store(&self, key: &str, bytes: &[u8], ttl: Option<Duration>) {
         if !self.fits(key, bytes) {
             return;
         }
-        let expires_at = ttl.map(|ttl| envelope::expiry(envelope::now_ms(), ttl));
-        let value = envelope::encode(bytes, expires_at);
-        self.with_cf(|db, cf| db.put_cf(cf, key, &value));
+        let longest = Duration::from_secs(self.db.config().cache_ttl_secs);
+        let ttl = ttl.map_or(longest, |ttl| ttl.min(longest));
+        let value = envelope::encode(bytes, Some(envelope::expiry(envelope::now_ms(), ttl)));
+        let options = self.write_options();
+        self.with_cf(|db, cf| db.put_cf_opt(cf, key, &value, &options));
     }
 
     fn load(&self, key: &str) -> Option<Vec<u8>> {
@@ -125,13 +138,17 @@ impl Cache for RocksCache {
 
     fn invalidate(&self, key: &str) {
         if key.len() <= self.db.config().max_key_bytes {
-            self.with_cf(|db, cf| db.delete_cf(cf, key));
+            let options = self.write_options();
+            self.with_cf(|db, cf| db.delete_cf_opt(cf, key, &options));
         }
     }
 
     fn clear(&self) {
         // Cache keys are UTF-8. No UTF-8 text has the byte 0xFF, so this range holds each key.
-        self.with_cf(|db, cf| db.delete_range_cf(cf, [].as_slice(), [0xFF].as_slice()));
+        let options = self.write_options();
+        self.with_cf(|db, cf| {
+            db.delete_range_cf_opt(cf, [].as_slice(), [0xFF].as_slice(), &options)
+        });
     }
 }
 

@@ -128,6 +128,8 @@ pub struct RocksDbConfig {
     pub sessions: bool,
     /// The session time to live in seconds. `None` uses `session.max_age_secs` of Autumn.
     pub session_ttl_secs: Option<u64>,
+    /// The longest cache time to live in seconds. A cache entry without a TTL gets this TTL.
+    pub cache_ttl_secs: u64,
     /// If `true`, the plugin adds a readiness check.
     pub health_check: bool,
     /// If `true`, the plugin flushes the write-ahead log and the memtables at shutdown.
@@ -163,6 +165,7 @@ impl Default for RocksDbConfig {
             cache: false,
             sessions: false,
             session_ttl_secs: None,
+            cache_ttl_secs: 86_400,
             health_check: true,
             flush_on_shutdown: true,
             block_cache_bytes: None,
@@ -201,6 +204,7 @@ const LEAVES: &[(&str, Kind)] = &[
     ("cache", Kind::Bool),
     ("sessions", Kind::Bool),
     ("session_ttl_secs", Kind::Unsigned),
+    ("cache_ttl_secs", Kind::Unsigned),
     ("health_check", Kind::Bool),
     ("flush_on_shutdown", Kind::Bool),
     ("block_cache_bytes", Kind::Unsigned),
@@ -316,6 +320,9 @@ impl RocksDbConfig {
         }
         if self.session_ttl_secs == Some(0) {
             return fail("session_ttl_secs", "must be 1 or more");
+        }
+        if self.cache_ttl_secs == 0 {
+            return fail("cache_ttl_secs", "must be 1 or more");
         }
         if self.block_cache_bytes == Some(0) {
             return fail("block_cache_bytes", "must be 1 or more");

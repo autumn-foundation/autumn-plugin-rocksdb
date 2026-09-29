@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 use crate::config::RocksDbConfig;
+use crate::envelope;
 use crate::metrics::Metrics;
 
 async fn cache_with(change: impl FnOnce(&mut RocksDbConfig)) -> (RocksCache, RocksDb) {
@@ -81,20 +82,80 @@ async fn insert_value_stores_known_types_only() {
     assert!(cache.get_value("other").is_none());
 }
 
+fn stored_expiry(db: &RocksDb, key: &str) -> Option<u64> {
+    let db = db.database().unwrap();
+    let raw = db
+        .get_cf(db.cf_handle(CACHE_CF).unwrap(), key)
+        .unwrap()
+        .unwrap();
+    envelope::decode(&raw).unwrap().expires_at
+}
+
 #[tokio::test]
-async fn an_entry_expires_after_the_ttl() {
-    let cache = cache().await;
-    insert_cached(&cache, "k", 1_u8, Some(Duration::from_millis(50)));
-    assert_eq!(get_cached::<u8>(&cache, "k"), Some(1));
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert_eq!(get_cached::<u8>(&cache, "k"), None);
+async fn an_expired_entry_is_a_miss() {
+    let (cache, db) = cache_with(|_| {}).await;
+    let past = envelope::encode(b"1", Some(envelope::now_ms() - 1));
+    db.internal_cf(CACHE_CF).put("old", past).await.unwrap();
+    assert!(cache.get_value("old").is_none());
+}
+
+#[tokio::test]
+async fn an_entry_gets_its_ttl() {
+    let (cache, db) = cache_with(|_| {}).await;
+    let before = envelope::now_ms();
+    insert_cached(&cache, "k", 1_u8, Some(Duration::from_secs(60)));
+    let expiry = stored_expiry(&db, "k").unwrap();
+    assert!(expiry >= before + 60_000 && expiry <= envelope::now_ms() + 60_000);
+}
+
+#[tokio::test]
+async fn cache_ttl_secs_caps_each_ttl() {
+    let (cache, db) = cache_with(|c| c.cache_ttl_secs = 10).await;
+    let before = envelope::now_ms();
+    cache.insert_value("none", Arc::new(1_i64));
+    insert_cached(&cache, "long", 1_u8, Some(Duration::from_secs(3600)));
+    for key in ["none", "long"] {
+        let expiry = stored_expiry(&db, key).expect("each entry expires");
+        assert!(expiry >= before + 10_000, "{key}");
+        assert!(expiry <= envelope::now_ms() + 10_000, "{key}");
+    }
+}
+
+#[tokio::test]
+async fn a_busy_cache_misses_and_skips_writes() {
+    use std::sync::atomic::AtomicBool;
+
+    let (cache, db) = cache_with(|c| c.max_concurrent_calls = 1).await;
+    insert_cached(&cache, "k", 1_u8, None);
+    let started = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&started);
+    let slow = tokio::spawn({
+        let db = db.clone();
+        async move {
+            db.with_db(move |_| {
+                flag.store(true, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(300));
+                Ok(())
+            })
+            .await
+        }
+    });
+    while !started.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    // The only call slot is taken. The cache does not wait for it.
+    assert!(cache.get_value("k").is_none());
+    insert_cached(&cache, "other", 2_u8, None);
+    slow.await.unwrap().unwrap();
+    assert!(cache.get_value("k").is_some());
+    assert!(cache.get_value("other").is_none());
 }
 
 #[tokio::test]
 async fn invalidate_and_clear_remove_entries() {
     let (cache, db) = cache_with(|c| c.column_families = vec!["users".into()]).await;
     db.cf("users").put("keep", "v").await.unwrap();
-    for key in ["a", "b", "ü-key"] {
+    for key in ["a", "b", "ü-key", "😀", "\u{10FFFF}"] {
         insert_cached(&cache, key, 1_u8, None);
     }
     cache.invalidate("a");
@@ -102,7 +163,9 @@ async fn invalidate_and_clear_remove_entries() {
     assert!(cache.get_value("b").is_some());
     cache.clear();
     assert!(cache.get_value("b").is_none());
-    assert!(cache.get_value("ü-key").is_none());
+    for key in ["ü-key", "😀", "\u{10FFFF}"] {
+        assert!(cache.get_value(key).is_none(), "{key}");
+    }
     assert_eq!(
         db.cf("users").get("keep").await.unwrap(),
         Some(b"v".to_vec())
@@ -120,7 +183,8 @@ async fn entries_above_the_size_limits_are_not_stored() {
     assert!(cache.get_value("long-key").is_none());
     insert_cached(&cache, "k", "a value that is too long".to_owned(), None);
     assert!(cache.get_value("k").is_none());
-    insert_cached(&cache, "k", "short".to_owned(), None);
+    // The JSON text `"fourteen chars"` has 16 bytes: exactly the limit.
+    insert_cached(&cache, "k", "fourteen chars".to_owned(), None);
     assert!(cache.get_value("k").is_some());
 }
 

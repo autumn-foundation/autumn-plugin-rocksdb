@@ -386,6 +386,17 @@ impl RocksDb {
             .clone()
     }
 
+    /// Takes a free call slot and the database without a wait. It gives `None` if all slots are busy.
+    ///
+    /// The sync cache uses it. A busy database gives a cache miss, not a blocked thread.
+    pub(crate) fn try_slot(&self) -> Option<(tokio::sync::SemaphorePermit<'_>, Arc<Database>)> {
+        if self.inner.shutting_down.load(Ordering::Acquire) {
+            return None;
+        }
+        let permit = self.inner.permits.try_acquire().ok()?;
+        Some((permit, self.database()?))
+    }
+
     /// Reads a database property on a blocking thread. It does not use a call slot.
     pub(crate) async fn property(&self, name: &'static str) -> Result<Option<u64>, RocksDbError> {
         let db = self.database().ok_or(RocksDbError::ShuttingDown)?;
