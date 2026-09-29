@@ -479,20 +479,32 @@ async fn shutdown_refuses_new_calls() {
 
 #[tokio::test]
 async fn shutdown_waits_for_open_calls() {
+    use std::sync::atomic::AtomicBool;
+
     let db = memory().await;
+    let started = Arc::new(AtomicBool::new(false));
+    let done = Arc::new(AtomicBool::new(false));
     let slow = {
-        let db = db.clone();
+        let (db, started, done) = (db.clone(), Arc::clone(&started), Arc::clone(&done));
         tokio::spawn(async move {
-            db.with_db(|db| {
+            db.with_db(move |db| {
+                started.store(true, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(200));
-                db.put(b"late", b"v")
+                db.put(b"late", b"v")?;
+                done.store(true, Ordering::SeqCst);
+                Ok(())
             })
             .await
         })
     };
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    while !started.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
     db.shutdown().await;
-    assert!(slow.is_finished());
+    assert!(
+        done.load(Ordering::SeqCst),
+        "the shutdown waited for the open call"
+    );
     slow.await.unwrap().unwrap();
 }
 

@@ -153,9 +153,9 @@ fn setup_hooks_run_in_order() {
 
 #[test]
 fn a_failed_setup_hook_is_an_error() {
-    // The open of a missing directory fails. It gives a real RocksDB error.
+    // A path with a NUL byte fails before RocksDB touches the file system. It gives a real error.
     let setups: Vec<Setup> = vec![Arc::new(|_: &Database| {
-        Database::open(&rocksdb::Options::default(), "/does/not/exist").map(drop)
+        Database::open(&rocksdb::Options::default(), "/does/not/\0exist").map(drop)
     })];
     assert!(matches!(
         open(&RocksDbConfig::default(), &setups),
@@ -191,4 +191,12 @@ fn the_compaction_filter_removes_expired_envelopes() {
         assert!(db.get_cf(handle, b"new").unwrap().is_some(), "{name}");
         assert!(db.get_cf(handle, b"forever").unwrap().is_some(), "{name}");
     }
+}
+
+#[test]
+fn the_in_memory_path_is_in_the_temp_directory() {
+    // `rocksdb` makes the directory on the real file system before each open.
+    // A path in the temp directory works for a user that is not root.
+    let path = memory_path();
+    assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
 }

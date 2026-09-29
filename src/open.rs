@@ -9,6 +9,7 @@
 //! - `autumn_cache` and `autumn_sessions` have a compaction filter. It removes expired envelopes.
 //! - Setup hooks run in order after the open. A failed hook stops the open.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use rocksdb::compaction_filter::Decision;
@@ -35,8 +36,16 @@ pub const CACHE_CF: &str = "autumn_cache";
 /// The column family of [`RocksSessionStore`](crate::RocksSessionStore).
 pub const SESSIONS_CF: &str = "autumn_sessions";
 
-/// The directory of an in-memory database in its in-memory file system.
-const MEMORY_PATH: &str = "/autumn-plugin-rocksdb";
+/// The directory name of an in-memory database.
+const MEMORY_DIR: &str = "autumn-plugin-rocksdb-memory";
+
+/// The directory of an in-memory database.
+///
+/// `rocksdb` makes this directory on the real file system before each open. It stays empty.
+/// The temp directory is writable for a user that is not root.
+pub(crate) fn memory_path() -> PathBuf {
+    std::env::temp_dir().join(MEMORY_DIR)
+}
 
 /// An open database.
 pub(crate) struct Opened {
@@ -51,11 +60,11 @@ pub(crate) fn open(config: &RocksDbConfig, setups: &[Setup]) -> Result<Opened, R
     let mut options = options(config);
     let path = if config.is_in_memory() {
         options.set_env(&Env::mem_env()?);
-        MEMORY_PATH
+        memory_path()
     } else {
-        config.path.as_str()
+        PathBuf::from(&config.path)
     };
-    let names = column_family_names(config, &options, path)?;
+    let names = column_family_names(config, &options, &path)?;
     let descriptors = names.iter().map(|name| {
         let cf_options = if name == CACHE_CF || name == SESSIONS_CF {
             ttl_options(&options)
@@ -65,9 +74,9 @@ pub(crate) fn open(config: &RocksDbConfig, setups: &[Setup]) -> Result<Opened, R
         ColumnFamilyDescriptor::new(name, cf_options)
     });
     let db = if config.is_read_only() {
-        Database::open_cf_descriptors_read_only(&options, path, descriptors, false)?
+        Database::open_cf_descriptors_read_only(&options, &path, descriptors, false)?
     } else {
-        Database::open_cf_descriptors(&options, path, descriptors)?
+        Database::open_cf_descriptors(&options, &path, descriptors)?
     };
     for setup in setups {
         setup(&db)?;
@@ -127,7 +136,7 @@ fn ttl_options(options: &Options) -> Options {
 fn column_family_names(
     config: &RocksDbConfig,
     options: &Options,
-    path: &str,
+    path: &Path,
 ) -> Result<Vec<String>, RocksDbError> {
     // A missing database has no column families. `list_cf` then fails.
     let existing = Database::list_cf(options, path).unwrap_or_default();
