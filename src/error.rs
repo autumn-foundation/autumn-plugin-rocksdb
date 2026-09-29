@@ -83,6 +83,13 @@ pub enum RocksDbError {
         /// The byte limit of a page.
         limit_bytes: usize,
     },
+    /// The operation needs a database on disk.
+    #[error("{operation} is not supported for an in-memory database")]
+    #[non_exhaustive]
+    NotSupported {
+        /// The operation.
+        operation: &'static str,
+    },
     /// The database is read-only. The plugin refuses writes.
     #[error("the database is read-only")]
     ReadOnly,

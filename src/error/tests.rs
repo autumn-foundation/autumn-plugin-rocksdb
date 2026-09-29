@@ -73,6 +73,9 @@ fn the_status_map() {
         RocksDbError::NotInstalled,
         RocksDbError::TaskFailed,
         RocksDbError::UnknownColumnFamily { name: "x".into() },
+        RocksDbError::NotSupported {
+            operation: "checkpoint",
+        },
     ] {
         assert_eq!(err.status(), StatusCode::INTERNAL_SERVER_ERROR, "{err}");
     }
@@ -112,4 +115,15 @@ fn into_autumn_keeps_the_status() {
 fn config_errors_convert() {
     let err = RocksDbError::from(ConfigError("rocksdb.path is bad".into()));
     assert_eq!(err.to_string(), "rocksdb.path is bad");
+}
+
+#[test]
+fn not_supported_names_the_operation() {
+    let err = RocksDbError::NotSupported {
+        operation: "checkpoint",
+    };
+    assert_eq!(
+        err.to_string(),
+        "checkpoint is not supported for an in-memory database"
+    );
 }
