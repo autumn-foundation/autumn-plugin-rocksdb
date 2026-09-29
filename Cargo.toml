@@ -1,0 +1,57 @@
+[package]
+name = "autumn-plugin-rocksdb"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Autumn plugin: a RocksDB key-value store, cache and session store for Autumn apps."
+license = "Apache-2.0"
+repository = "https://github.com/autumn-foundation/autumn-plugin-rocksdb"
+readme = "README.md"
+keywords = ["autumn", "rocksdb", "key-value", "cache", "plugin"]
+categories = ["web-programming", "database"]
+exclude = [".github/", "docs/", "CLAUDE.md", "clippy.toml", "proptest-regressions/"]
+
+[features]
+default = ["lz4", "zstd"]
+# Builds the LZ4 compression library into RocksDB.
+lz4 = ["rocksdb/lz4"]
+# Builds the Zstandard compression library into RocksDB.
+zstd = ["rocksdb/zstd"]
+# Builds the Snappy compression library into RocksDB.
+snappy = ["rocksdb/snappy"]
+
+[dependencies]
+# No default features: the host app selects the Autumn features.
+autumn-web = { version = ">=0.7, <0.8", default-features = false }
+axum = { version = "0.8", default-features = false }
+http = "1"
+rocksdb = { version = "0.25", default-features = false, features = ["bindgen-runtime"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "sync", "time"] }
+toml = "1.1"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+module_name_repetitions = "allow"
+redundant_pub_crate = "allow"

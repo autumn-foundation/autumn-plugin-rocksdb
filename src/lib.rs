@@ -1,0 +1,1 @@
+//! Autumn plugin for RocksDB.
