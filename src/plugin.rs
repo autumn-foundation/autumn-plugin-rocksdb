@@ -7,7 +7,8 @@
 //!   and puts it in the app state. The TTL is `session_ttl_secs`, or else `session.max_age_secs` of Autumn.
 //! - The startup hook opens the database on a blocking thread and puts the handle in the app state.
 //! - With `cache = true`, the startup hook installs a [`RocksCache`] as the app cache.
-//! - When Autumn marks the shutdown, a watch task shuts the handle down. The shutdown hook does the same.
+//! - When Autumn marks the shutdown, a watch task flushes the database. The database stays open for the drain.
+//! - The shutdown hook closes the database. Autumn runs it after the drain.
 //! - The readiness check and the metrics source use the same handle.
 
 use std::borrow::Cow;
@@ -43,7 +44,7 @@ pub(crate) struct Shared {
 impl Shared {
     pub(crate) async fn shutdown(&self) {
         if let Some(db) = self.handle.get() {
-            db.shutdown().await;
+            db.close().await;
         }
     }
 }
@@ -219,15 +220,18 @@ impl Plugin for RocksDbPlugin {
     }
 }
 
-/// Shuts the handle down when Autumn marks the shutdown.
+/// Flushes the database when Autumn marks the shutdown. The database stays open.
 ///
-/// Autumn runs the shutdown hooks after the request drain. The drain can end the process first.
+/// Autumn marks the shutdown before it drains the requests, so the handlers still need the database.
+/// The drain can end the process before the shutdown hook closes the database. The flush keeps the data safe.
 async fn watch_shutdown(state: AppState, db: RocksDb) {
     while !state.probes().is_shutting_down() {
         tokio::time::sleep(SHUTDOWN_WATCH).await;
     }
-    tracing::info!("the app shuts down: closing the RocksDB database");
-    db.shutdown().await;
+    match db.flush().await {
+        Ok(()) => tracing::info!("the app shuts down: the RocksDB data is on disk"),
+        Err(err) => tracing::warn!(error = %err, "the RocksDB flush at the shutdown mark failed"),
+    }
 }
 
 /// A boot error. The text has no RocksDB message, because it can hold a path.

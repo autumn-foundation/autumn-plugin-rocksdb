@@ -154,15 +154,12 @@ async fn without_the_sessions_option_there_is_no_session_store() {
 }
 
 #[tokio::test]
-async fn the_shutdown_mark_stops_new_calls() {
+async fn the_shutdown_mark_keeps_the_database_open() {
     let client = app(plugin());
     client.state().begin_shutdown_for_test();
+    // Autumn drains requests after the mark. Handlers must still work.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    client.get("/notes/seed").send().await.assert_ok();
     let db = RocksDb::from_state(client.state()).unwrap();
-    for _ in 0..200 {
-        if db.get("k").await == Err(RocksDbError::ShuttingDown) {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    panic!("the shutdown watch did not stop new calls");
+    assert_ne!(db.get("k").await, Err(RocksDbError::ShuttingDown));
 }

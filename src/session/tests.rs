@@ -131,7 +131,7 @@ async fn a_bound_store_works_after_bind() {
 async fn a_shut_down_store_gives_errors() {
     let db = db_with(|_| {}).await;
     let store = RocksSessionStore::new(db.clone(), HOUR).unwrap();
-    db.shutdown().await;
+    db.close().await;
     assert!(store.load("id").await.is_err());
     assert!(store.save("id", data()).await.is_err());
 }
@@ -157,7 +157,7 @@ async fn sessions_survive_a_restart() {
         .save("id", data())
         .await
         .unwrap();
-    db.shutdown().await;
+    db.close().await;
     let store = RocksSessionStore::new(RocksDb::open(config).await.unwrap(), HOUR).unwrap();
     assert_eq!(store.load("id").await.unwrap(), Some(data()));
 }

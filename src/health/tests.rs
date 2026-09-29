@@ -57,7 +57,7 @@ async fn a_file_database_says_file_and_not_the_path() {
 #[tokio::test]
 async fn a_check_after_shutdown_is_down() {
     let (shared, db) = started(RocksDbConfig::default()).await;
-    db.shutdown().await;
+    db.close().await;
     let output = DatabaseCheck::new(shared).check().await;
     assert_eq!(output.status, HealthStatus::Down);
     assert_eq!(output.details["state"], "shut down");

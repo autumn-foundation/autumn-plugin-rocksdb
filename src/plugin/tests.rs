@@ -1,4 +1,8 @@
 #![allow(clippy::float_cmp, reason = "the counters are small whole numbers")]
+#![allow(
+    clippy::field_reassign_with_default,
+    reason = "each test changes one key of the defaults"
+)]
 
 use std::time::Duration;
 
@@ -47,7 +51,7 @@ fn a_bad_section_names_the_section() {
 }
 
 #[tokio::test]
-async fn shutdown_closes_the_handle() {
+async fn the_shutdown_hook_closes_the_handle() {
     let shared = Shared::default();
     let db = RocksDb::open(RocksDbConfig::default()).await.unwrap();
     assert!(shared.handle.set(db.clone()).is_ok());
@@ -87,9 +91,13 @@ async fn the_metrics_source_has_counters_and_properties() {
 }
 
 #[tokio::test]
-async fn the_watch_shuts_the_handle_down() {
+async fn the_watch_flushes_and_keeps_serving() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = RocksDbConfig::default();
+    config.path = dir.path().join("db").to_str().unwrap().to_owned();
     let state = AppState::for_test();
-    let db = RocksDb::open(RocksDbConfig::default()).await.unwrap();
+    let db = RocksDb::open(config).await.unwrap();
+    db.put("k", "v").await.unwrap();
     let watch = tokio::spawn(watch_shutdown(state.clone(), db.clone()));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!watch.is_finished());
@@ -98,7 +106,12 @@ async fn the_watch_shuts_the_handle_down() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(db.get("k").await.unwrap_err(), RocksDbError::ShuttingDown);
+    // Autumn still drains requests after the mark. The database must serve them.
+    assert_eq!(db.get("k").await.unwrap(), Some(b"v".to_vec()));
+    let sst = db
+        .with_db(|db| db.property_int_value("rocksdb.total-sst-files-size"))
+        .await;
+    assert!(sst.unwrap().unwrap() > 0, "the watch flushed the memtable");
 }
 
 #[test]

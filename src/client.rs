@@ -5,15 +5,18 @@
 //! - Each call runs on a blocking thread. A semaphore limits the open calls to `max_concurrent_calls`.
 //! - Each call has a deadline: `timeout_ms` from the call start. The wait for a call slot counts.
 //! - At the deadline, the call gives [`RocksDbError::Timeout`] at once.
-//!   RocksDB cannot stop a call, so the blocking thread keeps its slot until RocksDB returns.
+//!   A call that did not start never runs. RocksDB cannot stop a call that started.
+//!   That call keeps its slot until RocksDB returns. Its outcome is unknown.
 //! - The plugin checks each key and value against the size limits before the call.
 //!   The metrics do not count a call that a check refuses.
 //! - A read-only database refuses each write before the call.
 //! - The user API refuses column families with the `autumn_` prefix and column families that are not open.
 //! - A scan page has at most `limit` entries and at most `max_scan_bytes` key and value bytes.
 //!   [`Page::next`] is the cursor of the next page. It is `None` only when no entry is left.
-//! - After [`RocksDb::shutdown`], new calls fail with [`RocksDbError::ShuttingDown`].
-//!   The shutdown waits for open calls, flushes a writable file database and closes it.
+//! - [`RocksDb::flush`] writes the write-ahead log and the memtables to disk. The database stays open.
+//! - After [`RocksDb::close`], new calls fail with [`RocksDbError::ShuttingDown`].
+//!   The close waits up to 5 seconds for open calls.
+//!   Then it flushes a writable file database, if `flush_on_shutdown` is `true`, and closes it.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -431,19 +434,47 @@ impl RocksDb {
         })
     }
 
+    /// Writes the write-ahead log and the memtables of a writable file database to disk.
+    ///
+    /// The database stays open. The call does not use a call slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RocksDbError::ShuttingDown`] after [`close`](Self::close), or the RocksDB error.
+    pub async fn flush(&self) -> Result<(), RocksDbError> {
+        let db = self.database().ok_or(RocksDbError::ShuttingDown)?;
+        if !self.needs_flush() {
+            return Ok(());
+        }
+        let names = self.inner.column_families.clone();
+        tokio::task::spawn_blocking(move || flush_all(&db, &names))
+            .await
+            .map_err(|_| RocksDbError::TaskFailed)?
+            .map_err(RocksDbError::from)
+    }
+
+    /// Returns `true` for a writable file database.
+    fn needs_flush(&self) -> bool {
+        let config = &self.inner.config;
+        !config.is_in_memory() && !config.is_read_only()
+    }
+
     /// Refuses new calls, waits for open calls, flushes a writable file database and closes it.
     ///
-    /// A second call waits for the first one to end.
-    pub(crate) async fn shutdown(&self) {
+    /// The plugin calls it after Autumn drains the requests. A second call waits for the first one to end.
+    /// A call that is still open after 5 seconds keeps the database open until it ends.
+    pub async fn close(&self) {
         let inner = &*self.inner;
         inner
             .shutdown_done
             .get_or_init(|| async {
                 inner.shutting_down.store(true, Ordering::Release);
                 let all = u32::try_from(inner.config.max_concurrent_calls).unwrap_or(u32::MAX);
-                let drained = tokio::time::timeout(SHUTDOWN_WAIT, inner.permits.acquire_many(all));
-                if !matches!(drained.await, Ok(Ok(_))) {
-                    tracing::warn!("open RocksDB calls did not end before the shutdown");
+                // Hold all slots until the database is taken. No call can start in between.
+                let drained =
+                    tokio::time::timeout(SHUTDOWN_WAIT, inner.permits.acquire_many(all)).await;
+                if !matches!(drained, Ok(Ok(_))) {
+                    tracing::warn!("open RocksDB calls did not end before the close");
                 }
                 inner.permits.close();
                 let db = inner
@@ -451,12 +482,11 @@ impl RocksDb {
                     .write()
                     .unwrap_or_else(PoisonError::into_inner)
                     .take();
+                drop(drained);
                 let Some(db) = db else {
                     return;
                 };
-                let flush = inner.config.flush_on_shutdown
-                    && !inner.config.is_in_memory()
-                    && !inner.config.is_read_only();
+                let flush = inner.config.flush_on_shutdown && self.needs_flush();
                 let names = inner.column_families.clone();
                 let task = tokio::task::spawn_blocking(move || {
                     let result = if flush {
@@ -464,16 +494,19 @@ impl RocksDb {
                     } else {
                         Ok(())
                     };
-                    // The last reference closes the database here, off the async thread.
-                    drop(db);
-                    result
+                    // Only the last reference closes the database, off the async thread.
+                    let closed = Arc::try_unwrap(db).is_ok();
+                    (result, closed)
                 });
                 match task.await {
-                    Ok(Ok(())) => tracing::info!("the RocksDB database is closed"),
-                    Ok(Err(err)) => {
-                        tracing::warn!(kind = ?err.kind(), "the RocksDB flush at shutdown failed");
+                    Ok((Err(err), _)) => {
+                        tracing::warn!(kind = ?err.kind(), "the RocksDB flush at the close failed");
                     }
-                    Err(_) => tracing::warn!("the RocksDB shutdown task stopped"),
+                    Ok((Ok(()), true)) => tracing::info!("the RocksDB database is closed"),
+                    Ok((Ok(()), false)) => tracing::warn!(
+                        "a RocksDB call is still open: the database closes when it ends"
+                    ),
+                    Err(_) => tracing::warn!("the RocksDB close task stopped"),
                 }
             })
             .await;
@@ -513,16 +546,25 @@ impl RocksDb {
             .map_err(|_| RocksDbError::ShuttingDown)?;
         // A shutdown can start after the first check. It takes the database away.
         let db = self.database().ok_or(RocksDbError::ShuttingDown)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let skip = Arc::clone(&cancelled);
         // The permit moves into the task. The slot stays taken until RocksDB returns.
-        let task = tokio::task::spawn_blocking(move || {
-            let result = work(&db);
-            drop(permit);
-            result
+        let mut task = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            // A call that waited in the queue past its deadline does no work.
+            if skip.load(Ordering::Acquire) {
+                return Err(RocksDbError::Timeout { timeout });
+            }
+            work(&db)
         });
-        match tokio::time::timeout_at(deadline, task).await {
+        match tokio::time::timeout_at(deadline, &mut task).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(RocksDbError::TaskFailed),
-            Err(_) => Err(RocksDbError::Timeout { timeout }),
+            Err(_) => {
+                cancelled.store(true, Ordering::Release);
+                task.abort();
+                Err(RocksDbError::Timeout { timeout })
+            }
         }
     }
 }
@@ -827,7 +869,11 @@ impl Batch {
             }
         }
         if writes.is_empty() {
-            return Ok(());
+            return if db.inner.shutting_down.load(Ordering::Acquire) {
+                Err(RocksDbError::ShuttingDown)
+            } else {
+                Ok(())
+            };
         }
         let sync = db.config().sync_writes;
         db.call(move |db| {

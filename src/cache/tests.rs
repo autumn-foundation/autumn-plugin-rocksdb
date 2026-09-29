@@ -149,7 +149,7 @@ async fn reads_count_hits_and_misses() {
 async fn a_shut_down_cache_misses_and_does_not_panic() {
     let (cache, db) = cache_with(|_| {}).await;
     insert_cached(&cache, "k", 1_u8, None);
-    db.shutdown().await;
+    db.close().await;
     assert!(cache.get_value("k").is_none());
     insert_cached(&cache, "k", 1_u8, None);
     cache.invalidate("k");
@@ -162,7 +162,7 @@ async fn entries_survive_a_restart() {
     let config = file_config(&dir.path().join("db"));
     let db = RocksDb::open(config.clone()).await.unwrap();
     insert_cached(&RocksCache::new(db.clone()).unwrap(), "k", 5_u8, None);
-    db.shutdown().await;
+    db.close().await;
     let db = RocksDb::open(config).await.unwrap();
     assert_eq!(
         get_cached::<u8>(&RocksCache::new(db).unwrap(), "k"),

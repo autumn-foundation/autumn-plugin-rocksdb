@@ -196,7 +196,7 @@ async fn a_read_only_database_refuses_writes() {
     let mut config = file_config(&dir.path().join("db"));
     let writer = RocksDb::open(config.clone()).await.unwrap();
     writer.put("k", "v").await.unwrap();
-    writer.shutdown().await;
+    writer.close().await;
     config.access_mode = AccessMode::ReadOnly;
     let reader = RocksDb::open(config).await.unwrap();
     assert_eq!(reader.get("k").await.unwrap(), Some(b"v".to_vec()));
@@ -383,13 +383,18 @@ async fn a_panic_in_with_db_gives_task_failed() {
 #[tokio::test]
 async fn a_slow_call_times_out() {
     let db = with(|c| c.timeout_ms = 50).await;
+    let start = std::time::Instant::now();
     let err = db
         .with_db(|_| {
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_secs(1));
             Ok(())
         })
         .await
         .unwrap_err();
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "the timeout is at once"
+    );
     assert_eq!(
         err,
         RocksDbError::Timeout {
@@ -466,8 +471,8 @@ async fn a_dropped_call_counts_as_cancelled() {
 #[tokio::test]
 async fn shutdown_refuses_new_calls() {
     let db = memory().await;
-    db.shutdown().await;
-    db.shutdown().await;
+    db.close().await;
+    db.close().await;
     assert_eq!(db.get("k").await.unwrap_err(), RocksDbError::ShuttingDown);
     assert_eq!(
         db.put("k", "v").await.unwrap_err(),
@@ -500,7 +505,7 @@ async fn shutdown_waits_for_open_calls() {
     while !started.load(Ordering::SeqCst) {
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    db.shutdown().await;
+    db.close().await;
     assert!(
         done.load(Ordering::SeqCst),
         "the shutdown waited for the open call"
@@ -514,7 +519,7 @@ async fn shutdown_flushes_and_closes_a_file_database() {
     let config = file_config(&dir.path().join("db"));
     let db = RocksDb::open(config.clone()).await.unwrap();
     db.put("k", "v").await.unwrap();
-    db.shutdown().await;
+    db.close().await;
     // The lock is free again, so the database is closed.
     let again = RocksDb::open(config).await.unwrap();
     assert_eq!(again.get("k").await.unwrap(), Some(b"v".to_vec()));
@@ -587,4 +592,101 @@ async fn debug_output_shows_no_keys_or_values() {
     let text = format!("{db:?} {:?} {batch:?} {scan:?}", db.cf("users"));
     assert!(!text.contains("secret"), "{text}");
     assert!(text.contains("users"), "{text}");
+}
+
+#[test]
+fn a_timed_out_call_that_did_not_start_never_runs() {
+    // One blocking thread: the second call waits in the queue until its deadline.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .max_blocking_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let db = with(|c| c.timeout_ms = 100).await;
+        let busy = db.with_db(|_| {
+            std::thread::sleep(Duration::from_millis(500));
+            Ok(())
+        });
+        let (busy, put) = tokio::join!(busy, db.put("k", "v"));
+        assert!(matches!(busy, Err(RocksDbError::Timeout { .. })));
+        assert!(matches!(put, Err(RocksDbError::Timeout { .. })));
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let db = db.clone();
+        assert_eq!(
+            db.get("k").await.unwrap(),
+            None,
+            "the queued write did not run"
+        );
+    });
+}
+
+#[tokio::test]
+async fn an_empty_batch_after_close_fails() {
+    let db = memory().await;
+    db.close().await;
+    assert_eq!(
+        db.batch().commit().await.unwrap_err(),
+        RocksDbError::ShuttingDown
+    );
+}
+
+#[tokio::test]
+async fn calls_after_close_are_not_counted() {
+    let db = memory().await;
+    db.close().await;
+    let _ = db.get("k").await;
+    let families = db.metrics().families();
+    let started = families
+        .iter()
+        .find(|f| f.name == "rocksdb_calls_started_total")
+        .unwrap();
+    assert!(started.samples[0].value.abs() < f64::EPSILON);
+}
+
+fn sst_files(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|x| x == "sst")
+        })
+        .count()
+}
+
+#[tokio::test]
+async fn close_writes_a_data_file_before_it_closes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let db = RocksDb::open(file_config(&path)).await.unwrap();
+    db.put("k", "v").await.unwrap();
+    assert_eq!(sst_files(&path), 0);
+    db.close().await;
+    assert!(sst_files(&path) > 0, "the close flushed the memtable");
+}
+
+#[tokio::test]
+async fn close_without_flush_on_shutdown_writes_no_data_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let mut config = file_config(&path);
+    config.flush_on_shutdown = false;
+    let db = RocksDb::open(config).await.unwrap();
+    db.put("k", "v").await.unwrap();
+    db.close().await;
+    assert_eq!(sst_files(&path), 0);
+}
+
+#[tokio::test]
+async fn flush_keeps_the_database_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let db = RocksDb::open(file_config(&path)).await.unwrap();
+    db.put("k", "v").await.unwrap();
+    db.flush().await.unwrap();
+    assert!(sst_files(&path) > 0);
+    assert_eq!(db.get("k").await.unwrap(), Some(b"v".to_vec()));
 }
