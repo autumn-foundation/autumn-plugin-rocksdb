@@ -1,12 +1,19 @@
 //! The plugin in an Autumn test app.
 
-#![allow(clippy::expect_used, reason = "test helpers panic on a broken setup")]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "test helpers panic on a broken setup"
+)]
+// `set_cache` sets a process-wide cache. Each `TestApp` build clears it, so tests do not
+// see the cache of another test. Tests must not assert on `global_cache()`: it races.
 
 use std::collections::HashMap;
 
 use autumn_plugin_rocksdb::{
     RocksDb, RocksDbConfig, RocksDbError, RocksDbPlugin, RocksDbResultExt as _, RocksSessionStore,
 };
+use autumn_web::config::AutumnConfig;
 use autumn_web::prelude::*;
 use autumn_web::session::SessionStore;
 use autumn_web::test::{TestApp, TestClient};
@@ -162,4 +169,91 @@ async fn the_shutdown_mark_keeps_the_database_open() {
     client.get("/notes/seed").send().await.assert_ok();
     let db = RocksDb::from_state(client.state()).unwrap();
     assert_ne!(db.get("k").await, Err(RocksDbError::ShuttingDown));
+}
+
+fn app_with(config: AutumnConfig, plugin: RocksDbPlugin) -> TestClient {
+    TestApp::new()
+        .config(config)
+        .routes(routes![note, add, big])
+        .plugin(plugin)
+        .build()
+}
+
+async fn session_expiry(client: &TestClient) -> u64 {
+    let store = client
+        .state()
+        .extension::<RocksSessionStore>()
+        .expect("the store is in the state");
+    store
+        .save("sid", HashMap::from([("k".to_owned(), "v".to_owned())]))
+        .await
+        .unwrap();
+    let db = RocksDb::from_state(client.state()).unwrap();
+    db.with_db(|db| {
+        let cf = db
+            .cf_handle(autumn_plugin_rocksdb::SESSIONS_CF)
+            .expect("open");
+        let mut found = None;
+        for item in db.iterator_cf(cf, autumn_plugin_rocksdb::rocksdb::IteratorMode::Start) {
+            let (_, value) = item?;
+            let mut expiry = [0; 8];
+            expiry.copy_from_slice(&value[1..9]);
+            found = Some(u64::from_be_bytes(expiry));
+        }
+        Ok(found.expect("one session"))
+    })
+    .await
+    .unwrap()
+}
+
+fn now_ms() -> u64 {
+    u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn the_session_ttl_falls_back_to_the_autumn_max_age() {
+    let mut config = AutumnConfig::default();
+    config.session.max_age_secs = 7;
+    let client = app_with(config, plugin().configure(|c| c.sessions = true));
+    let before = now_ms();
+    let expiry = session_expiry(&client).await;
+    assert!(
+        expiry >= before + 7_000 && expiry <= now_ms() + 7_000,
+        "{expiry}"
+    );
+}
+
+#[tokio::test]
+async fn session_ttl_secs_wins_over_the_autumn_max_age() {
+    let mut config = AutumnConfig::default();
+    config.session.max_age_secs = 7;
+    let client = app_with(
+        config,
+        plugin().configure(|c| {
+            c.sessions = true;
+            c.session_ttl_secs = Some(60);
+        }),
+    );
+    let before = now_ms();
+    let expiry = session_expiry(&client).await;
+    assert!(
+        expiry >= before + 60_000 && expiry <= now_ms() + 60_000,
+        "{expiry}"
+    );
+}
+
+#[tokio::test]
+async fn health_check_false_adds_no_indicator() {
+    let with = app(plugin());
+    let body = with.get("/actuator/health").send().await.text();
+    assert!(body.contains("rocksdb"), "{body}");
+    let without = app(plugin().configure(|c| c.health_check = false));
+    let body = without.get("/actuator/health").send().await.text();
+    assert!(!body.contains("rocksdb"), "{body}");
 }

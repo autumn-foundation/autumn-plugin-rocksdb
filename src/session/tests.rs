@@ -44,23 +44,40 @@ async fn save_load_and_destroy() {
     store.destroy("id").await.unwrap();
 }
 
+async fn stored_expiry(db: &RocksDb, id: &str) -> u64 {
+    let raw = db
+        .internal_cf(SESSIONS_CF)
+        .get(session_key(id))
+        .await
+        .unwrap()
+        .unwrap();
+    envelope::decode(&raw).unwrap().expires_at.unwrap()
+}
+
 #[tokio::test]
-async fn a_session_expires_after_the_ttl() {
-    let store = RocksSessionStore::new(db_with(|_| {}).await, Duration::from_millis(50)).unwrap();
-    store.save("id", data()).await.unwrap();
-    assert!(store.load("id").await.unwrap().is_some());
-    tokio::time::sleep(Duration::from_millis(80)).await;
+async fn an_expired_session_is_none() {
+    let db = db_with(|_| {}).await;
+    let store = RocksSessionStore::new(db.clone(), HOUR).unwrap();
+    let payload = br#"{"user_id":"42"}"#;
+    let past = envelope::encode(payload, Some(envelope::now_ms() - 1));
+    db.internal_cf(SESSIONS_CF)
+        .put(session_key("id"), past)
+        .await
+        .unwrap();
     assert_eq!(store.load("id").await.unwrap(), None);
 }
 
 #[tokio::test]
 async fn a_save_moves_the_expiry() {
-    let store = RocksSessionStore::new(db_with(|_| {}).await, Duration::from_millis(150)).unwrap();
+    let db = db_with(|_| {}).await;
+    let store = RocksSessionStore::new(db.clone(), HOUR).unwrap();
+    let old = envelope::encode(b"{}", Some(envelope::now_ms() + 10));
+    db.internal_cf(SESSIONS_CF)
+        .put(session_key("id"), old)
+        .await
+        .unwrap();
     store.save("id", data()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    store.save("id", data()).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    assert!(store.load("id").await.unwrap().is_some());
+    assert!(stored_expiry(&db, "id").await >= envelope::now_ms() + 3_500_000);
 }
 
 #[tokio::test]
@@ -137,6 +154,7 @@ async fn a_shut_down_store_gives_errors() {
     db.close().await;
     assert!(store.load("id").await.is_err());
     assert!(store.save("id", data()).await.is_err());
+    assert!(store.destroy("id").await.is_err());
 }
 
 #[tokio::test]
@@ -193,4 +211,26 @@ fn session_keys_are_sha256() {
         hex
     });
     assert_eq!(hex, expected);
+}
+
+#[tokio::test]
+async fn a_read_only_database_refuses_the_store() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = file_config(&dir.path().join("db"));
+    config.cache = true;
+    RocksDb::open(config.clone()).await.unwrap().close().await;
+    config.sessions = false;
+    config.cache = false;
+    config.access_mode = crate::config::AccessMode::ReadOnly;
+    // The old reserved column families are open again, but read-only.
+    let db = RocksDb::open(config).await.unwrap();
+    assert!(db.column_families().iter().any(|n| n == SESSIONS_CF));
+    assert_eq!(
+        RocksSessionStore::new(db.clone(), HOUR).unwrap_err(),
+        RocksDbError::ReadOnly
+    );
+    assert_eq!(
+        crate::cache::RocksCache::new(db).unwrap_err(),
+        RocksDbError::ReadOnly
+    );
 }

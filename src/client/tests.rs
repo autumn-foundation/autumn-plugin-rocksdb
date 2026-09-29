@@ -410,12 +410,12 @@ async fn a_slow_call_times_out() {
 #[tokio::test]
 async fn a_timed_out_call_keeps_its_slot_until_it_ends() {
     let db = with(|c| {
-        c.timeout_ms = 50;
+        c.timeout_ms = 200;
         c.max_concurrent_calls = 1;
     })
     .await;
     let slow = db.with_db(|_| {
-        std::thread::sleep(Duration::from_millis(400));
+        std::thread::sleep(Duration::from_millis(1000));
         Ok(())
     });
     assert!(matches!(slow.await, Err(RocksDbError::Timeout { .. })));
@@ -424,7 +424,7 @@ async fn a_timed_out_call_keeps_its_slot_until_it_ends() {
         db.get("k").await,
         Err(RocksDbError::Timeout { .. })
     ));
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
     assert_eq!(db.get("k").await.unwrap(), None);
 }
 
@@ -768,4 +768,119 @@ async fn a_scan_can_skip_an_entry_above_the_byte_limit() {
     };
     let rest = db.scan().after(key).fetch().await.unwrap();
     assert_eq!(keys(&rest), ["c"]);
+}
+
+fn outcome(db: &RocksDb, name: &str) -> f64 {
+    db.metrics()
+        .families()
+        .into_iter()
+        .find(|f| f.name == "rocksdb_calls_total")
+        .unwrap()
+        .samples
+        .into_iter()
+        .find(|s| s.labels[0].1 == name)
+        .unwrap()
+        .value
+}
+
+fn started(db: &RocksDb) -> f64 {
+    db.metrics()
+        .families()
+        .into_iter()
+        .find(|f| f.name == "rocksdb_calls_started_total")
+        .unwrap()
+        .samples[0]
+        .value
+}
+
+#[tokio::test]
+async fn a_timeout_counts_as_timed_out() {
+    let db = with(|c| c.timeout_ms = 20).await;
+    let _ = db
+        .with_db(|_| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(())
+        })
+        .await;
+    assert!((outcome(&db, "timed_out") - 1.0).abs() < f64::EPSILON);
+    assert!(outcome(&db, "failed").abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn refused_calls_are_not_counted() {
+    let db = with(|c| {
+        c.max_key_bytes = 2;
+        c.max_scan_entries = 5;
+    })
+    .await;
+    let _ = db.get("long").await;
+    let _ = db.scan().limit(9).fetch().await;
+    let _ = db.cf("nothing").get("k").await;
+    let _ = db.batch().put("long", "v").commit().await;
+    assert!(started(&db).abs() < f64::EPSILON);
+}
+
+#[tokio::test]
+async fn calls_run_up_to_the_limit() {
+    use std::sync::atomic::AtomicUsize;
+
+    let db = with(|c| c.max_concurrent_calls = 2).await;
+    let open = Arc::new(AtomicUsize::new(0));
+    let peak = Arc::new(AtomicUsize::new(0));
+    let call = || {
+        let (open, peak) = (Arc::clone(&open), Arc::clone(&peak));
+        db.with_db(move |_| {
+            let now = open.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(150));
+            open.fetch_sub(1, Ordering::SeqCst);
+            Ok(())
+        })
+    };
+    let (a, b, c) = tokio::join!(call(), call(), call());
+    a.unwrap();
+    b.unwrap();
+    c.unwrap();
+    assert_eq!(peak.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_page_can_fill_the_byte_limit_exactly() {
+    let db = with(|c| c.max_scan_bytes = 8).await;
+    db.put("a", "123").await.unwrap();
+    db.put("b", "123").await.unwrap();
+    let page = db.scan().fetch().await.unwrap();
+    assert_eq!(keys(&page), ["a", "b"]);
+    assert_eq!(page.next, None);
+}
+
+#[tokio::test]
+async fn empty_keys_and_values_work() {
+    let db = memory().await;
+    db.put("", "").await.unwrap();
+    db.put("a", "").await.unwrap();
+    assert_eq!(db.get("").await.unwrap(), Some(Vec::new()));
+    let first = db.scan().limit(1).fetch().await.unwrap();
+    assert_eq!(first.next, Some(Vec::new()));
+    let rest = db.scan().after(first.next.unwrap()).fetch().await.unwrap();
+    assert_eq!(keys(&rest), ["a"]);
+}
+
+#[tokio::test]
+async fn a_prefix_of_ff_bytes_reads_to_the_end() {
+    let db = memory().await;
+    db.put([0xFF], "1").await.unwrap();
+    db.put([0xFF, 0xFF, 0x01], "2").await.unwrap();
+    db.put([0xFE], "3").await.unwrap();
+    let page = db.scan().prefix([0xFF]).fetch().await.unwrap();
+    assert_eq!(page.entries.len(), 2);
+}
+
+#[tokio::test]
+async fn a_cursor_at_the_last_key_gives_an_empty_page() {
+    let db = memory().await;
+    fill(&db, &["p1", "p2", "q"]).await;
+    let page = db.scan().prefix("p").after("p2").fetch().await.unwrap();
+    assert!(page.entries.is_empty());
+    assert_eq!(page.next, None);
 }

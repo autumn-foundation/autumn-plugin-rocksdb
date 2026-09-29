@@ -125,3 +125,24 @@ fn debug_shows_the_config_source() {
     assert!(text.contains("store"), "{text}");
     assert!(text.contains("setups: 1"), "{text}");
 }
+
+#[tokio::test]
+async fn the_metrics_source_after_close_has_counters_only() {
+    let shared = Arc::new(Shared::default());
+    let db = RocksDb::open_with(
+        RocksDbConfig::default(),
+        Vec::new(),
+        Arc::clone(&shared.metrics),
+    )
+    .await
+    .unwrap();
+    assert!(shared.handle.set(db.clone()).is_ok());
+    db.close().await;
+    let names: Vec<String> = Source(shared)
+        .collect()
+        .into_iter()
+        .map(|f| f.name)
+        .collect();
+    assert!(names.contains(&"rocksdb_calls_total".to_owned()));
+    assert!(!names.contains(&"rocksdb_estimated_keys".to_owned()));
+}

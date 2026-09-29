@@ -88,3 +88,57 @@ async fn a_check_after_shutdown_is_down() {
     assert_eq!(output.status, HealthStatus::Down);
     assert_eq!(output.details["state"], "shut down");
 }
+
+#[tokio::test]
+async fn a_read_only_database_says_read_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = RocksDbConfig::default();
+    config.path = dir.path().join("db").to_str().unwrap().to_owned();
+    RocksDb::open(config.clone()).await.unwrap().close().await;
+    config.access_mode = crate::config::AccessMode::ReadOnly;
+    let (shared, _db) = started(config).await;
+    let output = DatabaseCheck::new(shared).check().await;
+    assert_eq!(output.details["access_mode"], "read_only");
+}
+
+#[tokio::test]
+async fn stopped_writes_are_down() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = RocksDbConfig::default();
+    config.path = dir.path().join("db").to_str().unwrap().to_owned();
+    let (shared, db) = started(config).await;
+    db.with_db(|db| {
+        db.set_options(&[
+            ("level0_file_num_compaction_trigger", "1000"),
+            ("level0_slowdown_writes_trigger", "1"),
+            ("level0_stop_writes_trigger", "1"),
+        ])?;
+        db.put(b"k", b"v")?;
+        db.flush()
+    })
+    .await
+    .unwrap();
+    let output = DatabaseCheck::new(shared).check().await;
+    assert_eq!(output.status, HealthStatus::Down);
+    assert_eq!(output.details["state"], "writes stopped");
+}
+
+#[tokio::test]
+async fn the_check_does_not_wait_for_a_slot() {
+    let mut config = RocksDbConfig::default();
+    config.max_concurrent_calls = 1;
+    let (shared, db) = started(config).await;
+    let busy = tokio::spawn(async move {
+        db.with_db(|_| {
+            std::thread::sleep(Duration::from_secs(1));
+            Ok(())
+        })
+        .await
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let start = Instant::now();
+    let output = DatabaseCheck::new(shared).check().await;
+    assert_eq!(output.status, HealthStatus::Up);
+    assert!(start.elapsed() < Duration::from_millis(500));
+    busy.await.unwrap().unwrap();
+}
