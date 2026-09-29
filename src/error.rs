@@ -5,7 +5,8 @@
 //! - A RocksDB error keeps its kind and its full message.
 //! - The error text shows the kind only. [`RocksDbError::detail`] gives the full message.
 //!   A RocksDB message can hold a file path. A JSON message can hold a value.
-//! - A timeout gives HTTP 504. A shutdown and a busy database give 503.
+//! - [`ErrorKind`] is the plugin's own copy of the RocksDB error kind. A `rocksdb` update does not change it.
+//! - A timeout gives HTTP 504. A shutdown and a busy database give 503. A bad scan limit gives 400.
 //!   A key, value or batch above the size limit gives 413. All other errors give 500.
 //! - The `Debug` output is the error text. It does not show the full message.
 //! - A timeout and the RocksDB kinds `Busy`, `TryAgain` and `TimedOut` are retryable.
@@ -14,7 +15,6 @@ use std::time::Duration;
 
 use autumn_web::AutumnError;
 use http::StatusCode;
-use rocksdb::ErrorKind;
 
 use crate::config::ConfigError;
 
@@ -30,7 +30,7 @@ pub enum RocksDbError {
     /// RocksDB refused the call.
     ///
     /// The text does not show `detail`, because it can hold a file path.
-    #[error("RocksDB refused the call: {kind:?} error")]
+    #[error("RocksDB refused the call: {kind}")]
     #[non_exhaustive]
     Database {
         /// The RocksDB error kind.
@@ -80,6 +80,8 @@ pub enum RocksDbError {
         limit: usize,
     },
     /// The scan page limit is 0 or larger than `max_scan_entries`.
+    ///
+    /// The status is HTTP 400, because the limit often comes from the request.
     #[error("the scan limit {limit} is not from 1 to {max}")]
     #[non_exhaustive]
     ScanLimit {
@@ -89,11 +91,16 @@ pub enum RocksDbError {
         max: usize,
     },
     /// One entry has more bytes than `max_scan_bytes`. No page can hold it.
+    ///
+    /// Read it with `get`, or give `key` to [`Scan::after`](crate::Scan::after) to skip it.
+    /// The text does not show `key`.
     #[error("one entry has more than {limit_bytes} bytes: read it with `get`")]
     #[non_exhaustive]
     EntryTooLarge {
         /// The byte limit of a page.
         limit_bytes: usize,
+        /// The key of the large entry.
+        key: Vec<u8>,
     },
     /// The operation needs a database on disk.
     #[error("{operation} is not supported for an in-memory database")]
@@ -134,6 +141,91 @@ pub enum RocksDbError {
     NotInstalled,
 }
 
+/// The kind of a RocksDB error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    /// RocksDB did not find a file or a key.
+    NotFound,
+    /// The data on disk is not valid.
+    Corruption,
+    /// The build or the open mode does not support the operation.
+    NotSupported,
+    /// An argument or an option is not valid.
+    InvalidArgument,
+    /// The file system refused an operation.
+    Io,
+    /// A merge is in progress.
+    MergeInProgress,
+    /// The operation did not complete. For example, a write stall stopped a write that must not wait.
+    Incomplete,
+    /// RocksDB shuts down.
+    ShutdownInProgress,
+    /// A RocksDB time limit ended the operation.
+    TimedOut,
+    /// RocksDB stopped the operation.
+    Aborted,
+    /// A resource is busy.
+    Busy,
+    /// The operation expired.
+    Expired,
+    /// A retry can succeed.
+    TryAgain,
+    /// A compaction is too large.
+    CompactionTooLarge,
+    /// The column family was dropped.
+    ColumnFamilyDropped,
+    /// RocksDB gave a kind that the plugin does not know.
+    Unknown,
+}
+
+impl From<rocksdb::ErrorKind> for ErrorKind {
+    fn from(kind: rocksdb::ErrorKind) -> Self {
+        use rocksdb::ErrorKind as Rocks;
+        match kind {
+            Rocks::NotFound => Self::NotFound,
+            Rocks::Corruption => Self::Corruption,
+            Rocks::NotSupported => Self::NotSupported,
+            Rocks::InvalidArgument => Self::InvalidArgument,
+            Rocks::IOError => Self::Io,
+            Rocks::MergeInProgress => Self::MergeInProgress,
+            Rocks::Incomplete => Self::Incomplete,
+            Rocks::ShutdownInProgress => Self::ShutdownInProgress,
+            Rocks::TimedOut => Self::TimedOut,
+            Rocks::Aborted => Self::Aborted,
+            Rocks::Busy => Self::Busy,
+            Rocks::Expired => Self::Expired,
+            Rocks::TryAgain => Self::TryAgain,
+            Rocks::CompactionTooLarge => Self::CompactionTooLarge,
+            Rocks::ColumnFamilyDropped => Self::ColumnFamilyDropped,
+            Rocks::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl std::fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotFound => "not found",
+            Self::Corruption => "corruption",
+            Self::NotSupported => "not supported",
+            Self::InvalidArgument => "invalid argument",
+            Self::Io => "I/O error",
+            Self::MergeInProgress => "merge in progress",
+            Self::Incomplete => "incomplete",
+            Self::ShutdownInProgress => "shutdown in progress",
+            Self::TimedOut => "timed out",
+            Self::Aborted => "aborted",
+            Self::Busy => "busy",
+            Self::Expired => "expired",
+            Self::TryAgain => "try again",
+            Self::CompactionTooLarge => "compaction too large",
+            Self::ColumnFamilyDropped => "column family dropped",
+            Self::Unknown => "unknown error",
+        })
+    }
+}
+
 impl std::fmt::Debug for RocksDbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The derived output shows `detail`. It can hold a file path or a value.
@@ -146,7 +238,7 @@ impl std::fmt::Debug for RocksDbError {
 impl From<rocksdb::Error> for RocksDbError {
     fn from(err: rocksdb::Error) -> Self {
         Self::Database {
-            kind: err.kind(),
+            kind: ErrorKind::from(err.kind()),
             detail: err.into_string(),
         }
     }
@@ -174,9 +266,9 @@ impl RocksDbError {
 
     /// The RocksDB error kind of a [`RocksDbError::Database`] error.
     #[must_use]
-    pub const fn kind(&self) -> Option<&ErrorKind> {
+    pub const fn kind(&self) -> Option<ErrorKind> {
         match self {
-            Self::Database { kind, .. } => Some(kind),
+            Self::Database { kind, .. } => Some(*kind),
             _ => None,
         }
     }
@@ -211,6 +303,7 @@ impl RocksDbError {
             Self::KeyTooLarge { .. } | Self::ValueTooLarge { .. } | Self::BatchTooLarge { .. } => {
                 StatusCode::PAYLOAD_TOO_LARGE
             }
+            Self::ScanLimit { .. } => StatusCode::BAD_REQUEST,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

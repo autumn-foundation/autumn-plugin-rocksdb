@@ -12,13 +12,16 @@ categories = ["web-programming", "database"]
 exclude = [".github/", "docs/", "CLAUDE.md", "clippy.toml", "proptest-regressions/"]
 
 [features]
-default = ["lz4", "zstd"]
+# RocksDB writes Snappy blocks by default. `snappy` lets the plugin read files from other tools.
+default = ["lz4", "zstd", "snappy"]
 # Builds the LZ4 compression library into RocksDB.
 lz4 = ["rocksdb/lz4"]
 # Builds the Zstandard compression library into RocksDB.
 zstd = ["rocksdb/zstd"]
 # Builds the Snappy compression library into RocksDB.
 snappy = ["rocksdb/snappy"]
+# Builds the zlib compression library into RocksDB. It reads files from other tools.
+zlib = ["rocksdb/zlib"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.

@@ -331,7 +331,7 @@ impl RocksDb {
         self.call(move |db| {
             rocksdb::checkpoint::Checkpoint::new(db)?.create_checkpoint(&dir)?;
             open::make_private(&dir).map_err(|err| RocksDbError::Database {
-                kind: rocksdb::ErrorKind::IOError,
+                kind: crate::error::ErrorKind::Io,
                 detail: err.to_string(),
             })
         })
@@ -413,9 +413,12 @@ impl RocksDb {
     }
 
     /// Reads a database property on a blocking thread. It does not use a call slot.
-    pub(crate) async fn property(&self, name: &'static str) -> Result<Option<u64>, RocksDbError> {
+    pub(crate) async fn property(
+        &self,
+        name: &'static str,
+        timeout: Duration,
+    ) -> Result<Option<u64>, RocksDbError> {
         let db = self.database().ok_or(RocksDbError::ShuttingDown)?;
-        let timeout = self.inner.config.timeout();
         let task = tokio::task::spawn_blocking(move || db.property_int_value(name));
         match tokio::time::timeout(timeout, task).await {
             Ok(Ok(result)) => Ok(result?),
@@ -963,6 +966,7 @@ fn read_page(
             if page.entries.is_empty() {
                 return Err(RocksDbError::EntryTooLarge {
                     limit_bytes: max_bytes,
+                    key: key.into_vec(),
                 });
             }
             page.next = page.entries.last().map(|entry| entry.key.clone());

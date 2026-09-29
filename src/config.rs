@@ -410,7 +410,7 @@ impl RocksDbConfig {
 
     /// The session time to live. `autumn_max_age_secs` is `session.max_age_secs` of Autumn.
     #[must_use]
-    pub fn session_ttl(&self, autumn_max_age_secs: u64) -> Duration {
+    pub(crate) fn session_ttl(&self, autumn_max_age_secs: u64) -> Duration {
         Duration::from_secs(self.session_ttl_secs.unwrap_or(autumn_max_age_secs).max(1))
     }
 }

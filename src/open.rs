@@ -37,6 +37,9 @@ pub const CACHE_CF: &str = "autumn_cache";
 /// The column family of [`RocksSessionStore`](crate::RocksSessionStore).
 pub const SESSIONS_CF: &str = "autumn_sessions";
 
+/// The largest info log file of an in-memory database.
+const MEMORY_LOG_BYTES: usize = 1024 * 1024;
+
 /// The directory name of an in-memory database.
 const MEMORY_DIR: &str = "autumn-plugin-rocksdb-memory";
 
@@ -61,12 +64,15 @@ pub(crate) fn open(config: &RocksDbConfig, setups: &[Setup]) -> Result<Opened, R
     let mut options = options(config);
     let path = if config.is_in_memory() {
         options.set_env(&Env::mem_env()?);
+        // The info log is in memory too. Keep it small.
+        options.set_max_log_file_size(MEMORY_LOG_BYTES);
+        options.set_keep_log_file_num(2);
         memory_path()
     } else {
         let path = PathBuf::from(&config.path);
         if !config.is_read_only() && config.create_if_missing && !path.exists() {
             create_private_dir(&path).map_err(|err| RocksDbError::Database {
-                kind: rocksdb::ErrorKind::IOError,
+                kind: crate::error::ErrorKind::Io,
                 detail: err.to_string(),
             })?;
         }
@@ -168,7 +174,12 @@ fn column_family_names(
     path: &Path,
 ) -> Result<Vec<String>, RocksDbError> {
     // A missing database has no column families. `list_cf` then fails.
-    let existing = Database::list_cf(options, path).unwrap_or_default();
+    // A read-only open needs a database, so the error is the real cause.
+    let existing = match Database::list_cf(options, path) {
+        Ok(existing) => existing,
+        Err(err) if config.is_read_only() => return Err(err.into()),
+        Err(_) => Vec::new(),
+    };
     let mut names = vec![rocksdb::DEFAULT_COLUMN_FAMILY_NAME.to_owned()];
     if config.is_read_only()
         && let Some(name) = config

@@ -3,6 +3,8 @@
     reason = "each test changes one key of the defaults"
 )]
 
+use std::time::{Duration, Instant};
+
 use autumn_web::actuator::HealthStatus;
 
 use super::*;
@@ -18,10 +20,34 @@ async fn started(config: RocksDbConfig) -> (Arc<Shared>, RocksDb) {
 
 #[test]
 fn problem_names_the_reason() {
-    assert_eq!(problem(0, 0), None);
-    assert_eq!(problem(1, 0), Some("background errors"));
-    assert_eq!(problem(0, 1), Some("writes stopped"));
-    assert_eq!(problem(2, 1), Some("background errors"));
+    assert_eq!(problem(false, 0), None);
+    assert_eq!(problem(true, 0), Some("background errors"));
+    assert_eq!(problem(false, 1), Some("writes stopped"));
+    assert_eq!(problem(true, 1), Some("background errors"));
+}
+
+#[test]
+fn only_recent_background_errors_count() {
+    let start = Instant::now();
+    let mut tracker = ErrorTracker::default();
+    assert!(!tracker.observe(0, start));
+    assert!(tracker.observe(1, start + Duration::from_secs(1)));
+    assert!(tracker.observe(1, start + Duration::from_secs(30)));
+    // RocksDB recovered. The count never goes down, but it stops growing.
+    assert!(!tracker.observe(1, start + Duration::from_secs(62)));
+    assert!(tracker.observe(2, start + Duration::from_secs(70)));
+}
+
+#[test]
+fn the_first_count_after_startup_is_recent() {
+    let mut tracker = ErrorTracker::default();
+    assert!(tracker.observe(3, Instant::now()));
+}
+
+#[test]
+fn the_check_answers_before_the_autumn_timeout() {
+    let check = DatabaseCheck::new(Arc::new(Shared::default()));
+    assert!(CHECK_WAIT < Duration::from_millis(check.timeout_ms()));
 }
 
 #[tokio::test]

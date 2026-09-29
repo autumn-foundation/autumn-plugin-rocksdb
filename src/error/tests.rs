@@ -17,7 +17,7 @@ fn real_error() -> rocksdb::Error {
 #[test]
 fn a_rocksdb_error_keeps_the_kind_and_the_message() {
     let err = RocksDbError::from(real_error());
-    assert_eq!(err.kind(), Some(&ErrorKind::InvalidArgument));
+    assert_eq!(err.kind(), Some(ErrorKind::InvalidArgument));
     assert!(err.detail().unwrap().contains("secret-name"));
 }
 
@@ -25,8 +25,7 @@ fn a_rocksdb_error_keeps_the_kind_and_the_message() {
 fn the_text_shows_the_kind_and_not_the_detail() {
     let err = RocksDbError::from(real_error());
     let text = err.to_string();
-    assert!(text.contains("InvalidArgument"), "{text}");
-    assert!(!text.contains("secret-name"), "{text}");
+    assert_eq!(text, "RocksDB refused the call: invalid argument");
 }
 
 #[test]
@@ -70,7 +69,7 @@ fn the_status_map() {
     assert_eq!(batch.status(), StatusCode::PAYLOAD_TOO_LARGE);
     for err in [
         database(ErrorKind::Corruption),
-        database(ErrorKind::IOError),
+        database(ErrorKind::Io),
         RocksDbError::ReadOnly,
         RocksDbError::NotInstalled,
         RocksDbError::TaskFailed,
@@ -135,8 +134,41 @@ fn debug_output_hides_the_detail() {
     let err = RocksDbError::from(real_error());
     let text = format!("{err:?}");
     assert!(!text.contains("secret-name"), "{text}");
-    assert!(text.contains("InvalidArgument"), "{text}");
+    assert!(text.contains("invalid argument"), "{text}");
     let source = serde_json::from_str::<u32>("\"secret-value\"").unwrap_err();
     let text = format!("{:?}", RocksDbError::json("decode", &source));
     assert!(!text.contains("secret-value"), "{text}");
+}
+
+#[test]
+fn each_rocksdb_kind_maps_to_a_kind() {
+    use rocksdb::ErrorKind as Rocks;
+    let pairs = [
+        (Rocks::NotFound, ErrorKind::NotFound),
+        (Rocks::Corruption, ErrorKind::Corruption),
+        (Rocks::NotSupported, ErrorKind::NotSupported),
+        (Rocks::InvalidArgument, ErrorKind::InvalidArgument),
+        (Rocks::IOError, ErrorKind::Io),
+        (Rocks::MergeInProgress, ErrorKind::MergeInProgress),
+        (Rocks::Incomplete, ErrorKind::Incomplete),
+        (Rocks::ShutdownInProgress, ErrorKind::ShutdownInProgress),
+        (Rocks::TimedOut, ErrorKind::TimedOut),
+        (Rocks::Aborted, ErrorKind::Aborted),
+        (Rocks::Busy, ErrorKind::Busy),
+        (Rocks::Expired, ErrorKind::Expired),
+        (Rocks::TryAgain, ErrorKind::TryAgain),
+        (Rocks::CompactionTooLarge, ErrorKind::CompactionTooLarge),
+        (Rocks::ColumnFamilyDropped, ErrorKind::ColumnFamilyDropped),
+        (Rocks::Unknown, ErrorKind::Unknown),
+    ];
+    for (rocks, ours) in pairs {
+        assert_eq!(ErrorKind::from(rocks), ours);
+        assert!(!ours.to_string().is_empty());
+    }
+}
+
+#[test]
+fn a_bad_scan_limit_is_a_bad_request() {
+    let err = RocksDbError::ScanLimit { limit: 0, max: 5 };
+    assert_eq!(err.status(), StatusCode::BAD_REQUEST);
 }

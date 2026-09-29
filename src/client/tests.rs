@@ -314,7 +314,10 @@ async fn one_entry_above_the_byte_limit_is_an_error() {
     fill(&db, &["a"]).await;
     assert_eq!(
         db.scan().fetch().await.unwrap_err(),
-        RocksDbError::EntryTooLarge { limit_bytes: 3 }
+        RocksDbError::EntryTooLarge {
+            limit_bytes: 3,
+            key: b"a".to_vec()
+        }
     );
 }
 
@@ -524,7 +527,7 @@ async fn shutdown_flushes_and_closes_a_file_database() {
     let again = RocksDb::open(config).await.unwrap();
     assert_eq!(again.get("k").await.unwrap(), Some(b"v".to_vec()));
     let sst = again
-        .property("rocksdb.total-sst-files-size")
+        .property("rocksdb.total-sst-files-size", Duration::from_secs(1))
         .await
         .unwrap();
     assert!(sst.unwrap() > 0, "the flush wrote a data file");
@@ -569,7 +572,9 @@ async fn properties_cover_each_column_family() {
     assert_eq!(names, ["default", "users"]);
     assert!(properties.column_families[1].memtable_bytes > 0);
     assert_eq!(
-        db.property("rocksdb.background-errors").await.unwrap(),
+        db.property("rocksdb.background-errors", Duration::from_secs(1))
+            .await
+            .unwrap(),
         Some(0)
     );
 }
@@ -742,4 +747,25 @@ async fn new_directories_are_private() {
         let mode = std::fs::metadata(dir).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "{} has mode {mode:o}", dir.display());
     }
+}
+
+#[tokio::test]
+async fn a_scan_can_skip_an_entry_above_the_byte_limit() {
+    let db = with(|c| c.max_scan_bytes = 6).await;
+    db.put("a", "1").await.unwrap();
+    db.put("b", "a large value").await.unwrap();
+    db.put("c", "3").await.unwrap();
+    let first = db.scan().fetch().await.unwrap();
+    assert_eq!(keys(&first), ["a"]);
+    let err = db
+        .scan()
+        .after(first.next.unwrap())
+        .fetch()
+        .await
+        .unwrap_err();
+    let RocksDbError::EntryTooLarge { key, .. } = err else {
+        panic!("{err}");
+    };
+    let rest = db.scan().after(key).fetch().await.unwrap();
+    assert_eq!(keys(&rest), ["c"]);
 }

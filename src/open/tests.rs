@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rocksdb::ErrorKind;
+use crate::error::ErrorKind;
 
 use super::*;
 use crate::config::AccessMode;
@@ -81,7 +81,7 @@ fn a_missing_directory_without_create_if_missing_is_an_error() {
     let mut config = file_config(&dir.path().join("missing"));
     config.create_if_missing = false;
     let err = open(&config, &[]).err().unwrap();
-    assert_eq!(err.kind(), Some(&ErrorKind::InvalidArgument));
+    assert_eq!(err.kind(), Some(ErrorKind::InvalidArgument));
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn a_second_writer_on_the_same_path_is_an_error() {
     let config = file_config(&dir.path().join("db"));
     let _first = open(&config, &[]).unwrap();
     let err = open(&config, &[]).err().unwrap();
-    assert_eq!(err.kind(), Some(&ErrorKind::IOError));
+    assert_eq!(err.kind(), Some(ErrorKind::Io));
 }
 
 #[test]
@@ -199,4 +199,14 @@ fn the_in_memory_path_is_in_the_temp_directory() {
     // A path in the temp directory works for a user that is not root.
     let path = memory_path();
     assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+}
+
+#[test]
+fn a_read_only_open_of_a_missing_database_gives_the_open_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = file_config(&dir.path().join("missing"));
+    config.access_mode = AccessMode::ReadOnly;
+    config.column_families = vec!["users".into()];
+    let err = open(&config, &[]).err().unwrap();
+    assert!(matches!(err, RocksDbError::Database { .. }), "{err}");
 }

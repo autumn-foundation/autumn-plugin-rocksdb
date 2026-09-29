@@ -207,6 +207,10 @@ impl Plugin for RocksDbPlugin {
                 }
                 if db.config().cache {
                     let cache = RocksCache::new(db).map_err(|err| boot_error(&err))?;
+                    if state.cache().is_some() {
+                        tracing::warn!("RocksCache replaces the app cache that the app installed");
+                    }
+                    // Autumn keeps one cache for the whole process.
                     state.set_cache(Arc::new(cache));
                 }
                 tracing::info!("the RocksDB plugin is ready");
