@@ -1,4 +1,4 @@
-//! Call counters, RocksDB properties and the Autumn metrics source.
+//! Call counters and RocksDB property gauges. The plugin module adds them to Autumn.
 //!
 //! # Contract
 //!
@@ -160,7 +160,7 @@ pub(crate) fn property_families(properties: &Properties) -> Vec<MetricFamily> {
     vec![
         single(
             "rocksdb_background_errors",
-            "Background errors since the open. More than zero stops writes.",
+            "Background errors since the open. RocksDB never lowers this count.",
             MetricKind::Gauge,
             value(properties.background_errors),
         ),

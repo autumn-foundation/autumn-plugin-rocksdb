@@ -4,7 +4,7 @@ This document records the plan for `autumn-plugin-rocksdb`. It uses three method
 
 ## Goal
 
-An Autumn app keeps key-value data in RocksDB. The app does one install step. The plugin keeps time, memory and blocking threads in limits. The same database can also hold the app cache and the sessions.
+An Autumn app keeps key-value data in RocksDB. The app does one install step. The plugin sets limits on call time, memory and blocking threads. The same database can also hold the app cache and the sessions.
 
 ## 1. Brainstorming
 
@@ -54,7 +54,7 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 | Wait without end for a slow disk. | Each call has a deadline. The wait for a permit counts. |
 | Read a very large scan into memory. | A page limit and a byte limit. A scan gives a cursor for the next page. |
 | Write a very large key or value. | A key size limit and a value size limit. The plugin refuses the write before the call. |
-| Open a database that has column families that the config does not name. RocksDB refuses the open. | List the existing column families. Open all of them. |
+| Open a database that has column families that the config does not name. RocksDB refuses the open. | List the column families that exist. Open all of them. |
 | Use a column family that does not exist. | Give a typed error. Do not panic. |
 | Change the cache or session data through the user API. | Names that start with `autumn_` are reserved. The user API refuses them. |
 | Open the same path in two processes. | RocksDB holds a lock file. The second open fails and stops the boot with a clear error. |
@@ -78,9 +78,9 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 - The `SessionStore` trait is async. It gets no TTL. The Autumn session config has `max_age_secs`.
 - The `rocksdb` crate 0.25 wraps RocksDB 11. It builds RocksDB from C++ source. The MSRV is 1.88.
 - `DB` is `Send` and `Sync`. Reads and writes need `&DB` only.
-- RocksDB calls block. A call cannot be interrupted.
+- RocksDB calls block. Nothing can stop a RocksDB call before it returns.
 - `Env::mem_env` gives an in-memory file system.
-- `DB::list_cf` gives the column families of an existing database.
+- `DB::list_cf` gives the column families of a database that exists.
 - `delete_range_cf` removes a key range in one call.
 - A compaction filter sees each key and value during compaction. It can remove the entry.
 - The properties `rocksdb.background-errors` and `rocksdb.is-write-stopped` show the database health.
@@ -91,14 +91,14 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 
 - Users want one line of setup and one line for each read or write.
 - A lost session or a lost write at shutdown is the worst result.
-- Silent truncation of a scan feels unsafe. A cursor makes the page end explicit.
+- A scan that stops without a signal is not safe. A cursor shows where the page ends.
 
 ### Black hat (risks)
 
 - The C++ build is slow. CI must cache it.
 - A timed-out call keeps its blocking thread until RocksDB returns.
 - A system clock that jumps changes the expiry of entries.
-- An in-memory database loses all data at shutdown. This is the purpose, but users must know it.
+- An in-memory database loses all data at shutdown. This is correct. Tell users about it.
 - An unbounded cache fills the disk. The compaction filter removes expired entries only.
 
 ### Yellow hat (benefits)
@@ -147,14 +147,14 @@ Ideas 1 to 24.
 | `config` | pure | `RocksDbConfig`, layering and validation. |
 | `envelope` | pure | The TTL value envelope and the expiry rule. |
 | `bounds` | pure | Prefix ends and scan bounds. |
-| `error` | data | `RocksDbError`, the error kind and the HTTP status map. |
+| `error` | data | `RocksDbError`, `ErrorKind` and the HTTP status map. |
+| `metrics` | data | Counters, property gauges and metric families. |
 | `open` | glue | RocksDB options and the open steps. |
 | `client` | glue | `RocksDb`, `Keyspace`, `Batch` and `Scan`: calls with a deadline and limits. |
 | `cache` | glue | `RocksCache`: the Autumn `Cache` backend. |
 | `session` | glue | `RocksSessionStore`: the Autumn `SessionStore` backend. |
-| `plugin` | glue | `RocksDbPlugin` and the extractor. |
+| `plugin` | glue | `RocksDbPlugin`, the extractor and the metrics source. |
 | `health` | glue | The readiness check. |
-| `metrics` | glue | Counters, properties and the metrics source. |
 
 ## 6. TDD plan
 
@@ -173,4 +173,22 @@ Each item is one cycle. Red: write a test that fails. Green: write the minimum c
 
 ## 7. Review
 
-Review agents read the code after the build. Each agent has one angle. This section records the findings and the fixes.
+Five review agents read the code after the build. Each agent had one angle. Each finding got a red test first, then a fix.
+
+| Angle | Main findings | Fixes |
+|-------|---------------|-------|
+| Correctness and concurrency | Autumn marks the shutdown before the drain, and the watch closed the database at the mark. A timed-out call that waited in the blocking queue still ran. The cache skipped the call slots. | The mark only flushes. The shutdown hook closes. A queued call that passed its deadline does no work. The cache takes a slot without a wait. |
+| Security and privacy | Session IDs were plain keys on disk. Directories were readable by other users. `Debug` output showed paths. A near-miss of `:memory:` made a real database. Cache entries without a TTL never expired. Batches had no size limit. | Session keys are SHA-256 hashes. New directories have mode `0700`. `Debug` output is the safe text. The path check refuses near misses. New keys `cache_ttl_secs` and `max_batch_bytes`. Expiry fails closed on a clock before 1970. |
+| RocksDB semantics | Snappy files from other tools were not readable. The background error count never goes down, so the check stayed down. A read-only open hid the real open error. The in-memory path was at the file system root. | `snappy` is a default feature. The check uses errors of the last 60 seconds. The read-only open gives the real error. The in-memory path is in the temp directory. |
+| API and documentation | The public error exposed a `rocksdb` enum. There was no public close. `ScanLimit` gave 500. Some docs did not match the code. | A new `ErrorKind`. Public `close` and `flush`. `ScanLimit` gives 400. `EntryTooLarge` has the key. The docs match the code. |
+| Test quality | Some contract bullets had no test. Some tests used short sleeps. | New tests kill each reported mutant. TTL tests use stored envelopes, not sleeps. |
+
+These items stay out of scope for 0.1:
+
+| Item | Reason |
+|------|--------|
+| A scan limit for deleted keys (`max_skippable_internal_keys`) | A large delete would then give an error. The call slot limit bounds the cost. |
+| A separate slot pool for sessions | The call limit covers all callers. Raise `max_concurrent_calls` for a busy app. |
+| A call slot for the readiness check | The check reads in-memory properties and waits 1 second at most. |
+| A size limit for the cache | Each entry expires. The compaction filter removes it from disk. |
+| `put_json` in a batch, and a `Keyspace` argument for `put_in` | Encode the value first. Use the column family name. |

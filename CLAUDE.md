@@ -19,7 +19,7 @@ RUSTDOCFLAGS=-D\ warnings cargo doc --locked --no-deps --all-features
 cargo llvm-cov --locked --all-features --ignore-filename-regex '/tests\.rs$' --fail-under-lines 90
 ```
 
-The MSRV is 1.88. The first build compiles RocksDB from C++ source. It takes some minutes. Each new feature set or toolchain builds it again.
+The MSRV is 1.88. The first build compiles RocksDB from C++ source. It takes 10 to 15 minutes on 4 CPU cores. Each new feature set or toolchain builds it again, and each build uses approximately 5 GB of disk. Use `--all-features` for each local command.
 
 ## Architecture
 
@@ -28,7 +28,7 @@ The MSRV is 1.88. The first build compiles RocksDB from C++ source. It takes som
 | `config` | pure | `RocksDbConfig`, layering and validation. |
 | `envelope` | pure | The TTL value envelope and the expiry rule. |
 | `bounds` | pure | Prefix ends and scan bounds. |
-| `error` | data | `RocksDbError` and the HTTP status map. |
+| `error` | data | `RocksDbError`, `ErrorKind` and the HTTP status map. |
 | `metrics` | data | Counters, property gauges and metric families. |
 | `open` | glue | RocksDB options, column families, the compaction filter and setup hooks. |
 | `client` | glue | `RocksDb`, `Keyspace`, `Scan` and `Batch`: calls with a deadline and limits. |
@@ -47,16 +47,22 @@ Each module has a `# Contract` doc section. Change the contract first. Then chan
 - Use `open::Database`, not `rocksdb::DB`. Another crate can change `rocksdb::DB` with the `multi-threaded-cf` feature.
 - Each RocksDB call from async code runs on a blocking thread. The sync `Cache` trait uses `block_in_place` on a multi-thread runtime.
 - Each user call has a deadline and a call slot. The slot stays taken until RocksDB returns.
+- A cache call takes a slot without a wait. It gives a miss or no write when no slot is free.
+- The shutdown mark only flushes. Handlers still need the database during the drain. The shutdown hook closes it.
 - Never log keys, values, session IDs or RocksDB messages. A RocksDB message can hold a file path.
+- Keep `Debug` output free of `detail`, keys and values.
+- `rocksdb` makes the database directory on the real file system before each open, also for `:memory:`.
 - Column families with the `autumn_` prefix belong to the plugin. The user API refuses them.
 - Metric names start with `rocksdb_`. They must not start with `autumn_`.
 - No test uses the network. Tests use `:memory:` or a temporary directory.
 
 ## Test notes
 
-- `TestApp` runs startup hooks but not shutdown hooks. `plugin::tests` tests the shutdown watch.
+- `TestApp` runs startup hooks but not shutdown hooks. `plugin::tests` tests the shutdown watch and the close.
 - `TestApp` uses its own memory session store for HTTP requests. The integration test uses the store in the app state.
-- `AppState::set_cache` sets a process-wide cache. Tests that turn on `cache` must not depend on other tests.
+- `AppState::set_cache` sets a process-wide cache. Each `TestApp` build clears it. Tests must not assert on `global_cache()`.
+- Do not use `sleep` to test a TTL. Write an envelope with a past expiry through `internal_cf`.
+- Tests must pass for a user that is not root. CI does not run as root.
 - A slow call for timeout tests: `db.with_db(|_| { std::thread::sleep(..); Ok(()) })`.
 
 ## Documentation style

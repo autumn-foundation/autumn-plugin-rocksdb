@@ -4,10 +4,10 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [RocksDB](ht
 
 - Key-value API: `get`, `put`, `delete`, JSON values, column families and atomic batches.
 - Scans: prefix and range scans in pages, with a cursor for the next page.
-- Cache: `RocksCache` is the Autumn app cache. Entries have a TTL and survive a restart.
+- Cache: `RocksCache` is the Autumn app cache. Each entry expires. Entries survive a restart.
 - Sessions: `RocksSessionStore` is the Autumn session store. Sessions survive a restart.
-- Limits: a timeout, a call limit, key and value size limits and scan page limits.
-- Operations: a readiness check, Prometheus metrics, checkpoints and a flush at shutdown.
+- Limits: a timeout, a call limit, and size limits for keys, values, batches and scan pages.
+- Operations: a readiness check, Prometheus metrics, checkpoints, and a flush and close at shutdown.
 - Tests: use an in-memory database. The tests need no server.
 
 ## Install
@@ -48,11 +48,13 @@ async fn main() {
 
 Add `profiles` to `column_families` in `autumn.toml`. See [Configuration](#configuration).
 
-The first build compiles RocksDB from C++ source. It takes some minutes. It needs a C++ compiler and `clang`.
+The first build compiles RocksDB from C++ source. It takes 10 to 15 minutes on 4 CPU cores. It needs a C++ compiler and `clang`.
 
-The `lz4` and `zstd` features are on by default. They build these compression libraries into RocksDB. The `snappy` feature adds Snappy.
+The `lz4`, `zstd` and `snappy` features are on by default. They build these compression libraries into RocksDB. RocksDB writes Snappy blocks by default, so `snappy` lets the plugin read databases from other tools. The `zlib` feature adds zlib.
 
 An app can have one RocksDB plugin only. Use column families to keep data sets apart.
+
+The plugin re-exports the `rocksdb` crate and uses its types in `with_db` and setup hooks. A `rocksdb` update is a breaking release of this crate.
 
 ## Configuration
 
@@ -68,10 +70,12 @@ timeout_ms = 5000              # includes the wait for a call slot
 max_concurrent_calls = 64
 max_key_bytes = 16384
 max_value_bytes = 16777216
+max_batch_bytes = 67108864
 max_scan_entries = 1000
 max_scan_bytes = 16777216
 sync_writes = false            # true waits for the write-ahead log on disk
 cache = false                  # true installs RocksCache as the app cache
+cache_ttl_secs = 86400         # the longest cache TTL
 sessions = false               # true installs RocksSessionStore
 # session_ttl_secs = 86400     # default: session.max_age_secs of Autumn
 health_check = true
@@ -85,6 +89,8 @@ bloom_filter_bits = 10         # 0 turns the bloom filter off
 ```
 
 The default path is `:memory:`. Set `path` to keep data after a restart.
+
+On Unix, the plugin makes a new database directory with mode `0700`. Only the owner can read it.
 
 Use `RocksDbPlugin::config` to give a configuration in code. Use `RocksDbPlugin::configure` to change the configuration after the plugin reads it.
 
@@ -110,6 +116,8 @@ db.batch()
     .await?;
 ```
 
+A write that times out after it starts can still complete. Its outcome is unknown. A write that times out before it starts never runs.
+
 ## Scans
 
 A scan reads one page in key order. `Page::next` is the cursor of the next page. It is `None` when no entry is left.
@@ -132,13 +140,18 @@ loop {
 }
 ```
 
-A page also ends at `max_scan_bytes`. One entry above that limit gives `EntryTooLarge`. Read it with `get`.
+A page also ends at `max_scan_bytes`. One entry above that limit gives `EntryTooLarge` with the key of the entry. Read it with `get`, or give the key to `after` to skip it.
 
 ## Cache and sessions
 
-Set `cache = true`. The plugin installs `RocksCache` as the app cache. `#[cached]` functions then store their values in RocksDB. Entries expire after their TTL.
+Set `cache = true`. The plugin installs `RocksCache` as the app cache. Autumn keeps one app cache for each process. `#[cached]` functions then store their values in RocksDB.
 
-Set `sessions = true`. The plugin installs `RocksSessionStore`. Each session expires `session_ttl_secs` after its last save.
+- Each cache entry expires. `cache_ttl_secs` is the longest TTL. An entry without a TTL gets it.
+- A cache call does not wait. If all call slots are busy, a read is a miss and a write does nothing.
+- A cache write does not wait for a RocksDB write stall. A stalled write does nothing.
+- The cache has no size limit. Expired entries leave the disk at compaction.
+
+Set `sessions = true`. The plugin installs `RocksSessionStore`. Each session expires `session_ttl_secs` after its last save. The key on disk is the SHA-256 hash of the session ID, not the ID.
 
 A compaction filter removes expired cache entries and sessions from disk. A read after the expiry is a miss before the filter runs.
 
@@ -152,13 +165,13 @@ A setup hook runs at startup, before the first request. A failed hook stops the 
 RocksDbPlugin::new().setup(|db| db.put(b"schema_version", b"1"))
 ```
 
-`with_db` gives the full `rocksdb` API on a blocking thread, for example for a snapshot. The timeout and the call limit apply.
+`with_db` gives the full `rocksdb` API on a blocking thread, for example for a snapshot. The timeout and the call limit apply. `sync_writes` does not apply to writes in `with_db` or in setup hooks.
 
 ```rust,ignore
 let value = db.with_db(|db| db.snapshot().get(b"key")).await?;
 ```
 
-`checkpoint` makes a consistent copy of a file database, for example for a backup. The directory must not exist.
+`checkpoint` makes a consistent copy of a file database, for example for a backup. The directory must not exist. On Unix, the copy has mode `0700`. The copy holds all data, so keep it safe.
 
 ## Errors
 
@@ -167,18 +180,20 @@ let value = db.with_db(|db| db.snapshot().get(b"key")).await?;
 | Error | Status |
 |-------|--------|
 | `Timeout` | 504 |
-| `ShuttingDown`, RocksDB `Busy`, `TryAgain`, `TimedOut`, `ShutdownInProgress` | 503 |
-| `KeyTooLarge`, `ValueTooLarge` | 413 |
+| `ShuttingDown`, and the kinds `Busy`, `TryAgain`, `TimedOut` and `ShutdownInProgress` | 503 |
+| `KeyTooLarge`, `ValueTooLarge`, `BatchTooLarge` | 413 |
+| `ScanLimit` | 400 |
 | All others | 500 |
 
-The error text never shows a RocksDB message, because it can hold a file path. `detail()` gives the full message. Do not show it to users.
+The error text and the `Debug` output never show a RocksDB message, because it can hold a file path. `detail()` gives the full message. Do not show it to users. `kind()` gives the `ErrorKind`.
 
 ## Operations
 
-- Readiness: `/actuator/health` has a `rocksdb` component. It is down before startup, after the shutdown, and when RocksDB has background errors or stops writes.
-- Metrics: `rocksdb_calls_total`, `rocksdb_calls_open`, `rocksdb_read_bytes_total`, `rocksdb_written_bytes_total`, `rocksdb_cache_requests_total`, and gauges for keys, file sizes, memtables and pending compaction.
-- Shutdown: the plugin refuses new calls, waits up to 5 seconds for open calls, flushes the write-ahead log and the memtables, and closes the database.
-- One process can open a database for writes. Other processes can open it with `access_mode = "read_only"`.
+- Readiness: `/actuator/health` has a `rocksdb` component. It is down before startup and after the close. It is also down when writes stop, or when the background error count grew in the last 60 seconds.
+- Metrics: `rocksdb_calls_started_total`, `rocksdb_calls_total`, `rocksdb_calls_open`, `rocksdb_read_bytes_total`, `rocksdb_written_bytes_total`, `rocksdb_cache_requests_total` and `rocksdb_background_errors`. Gauges for each column family give keys, file sizes, memtables and pending compaction.
+- Shutdown: Autumn marks the shutdown before it drains the requests. At the mark, the plugin flushes the write-ahead log and the memtables. The database stays open for the drain.
+- Close: after the drain, the plugin refuses new calls. It waits up to 5 seconds for open calls. Then it flushes a writable file database, if `flush_on_shutdown` is `true`. Then it closes the database.
+- One process can open a database for writes. Other processes can open it with `access_mode = "read_only"`. A read-only open is a view of the database at the time of the open. It does not see later writes.
 
 ## License
 

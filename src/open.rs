@@ -3,7 +3,7 @@
 //! # Contract
 //!
 //! - `:memory:` opens a database in a new in-memory file system. Two opens never share data.
-//! - The plugin opens each existing column family, each configured one and the reserved ones in use.
+//! - The plugin opens each column family that exists, each configured one and the reserved ones in use.
 //!   A writable open makes the missing ones.
 //! - A read-only open refuses a configured column family that does not exist.
 //! - `autumn_cache` and `autumn_sessions` have a compaction filter. It removes expired envelopes.
@@ -167,7 +167,7 @@ fn ttl_options(options: &Options) -> Options {
     options
 }
 
-/// Gives the column families to open: `default`, the existing ones, the configured ones and the reserved ones in use.
+/// Gives the column families to open: `default`, the ones that exist, the configured ones and the reserved ones in use.
 fn column_family_names(
     config: &RocksDbConfig,
     options: &Options,

@@ -122,7 +122,9 @@ pub struct RocksDbConfig {
     pub max_scan_bytes: usize,
     /// The most key and value bytes in one batch.
     pub max_batch_bytes: usize,
-    /// If `true`, each write waits until the write-ahead log is on disk.
+    /// If `true`, each write of the user API, the cache and the sessions waits until the write-ahead log is on disk.
+    ///
+    /// Writes in `with_db` and in setup hooks use their own write options.
     pub sync_writes: bool,
     /// If `true`, the plugin installs [`RocksCache`](crate::RocksCache) as the app cache.
     pub cache: bool,
