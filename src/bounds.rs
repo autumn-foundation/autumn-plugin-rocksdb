@@ -61,7 +61,8 @@ impl Bounds {
             .is_some_and(|upper| *upper <= self.lower)
     }
 
-    /// Returns `true` if `key` is in the bounds.
+    /// Returns `true` if `key` is in the bounds. RocksDB applies the bounds. The tests use this oracle.
+    #[cfg(test)]
     pub(crate) fn contains(&self, key: &[u8]) -> bool {
         key >= self.lower.as_slice()
             && self
