@@ -10,6 +10,7 @@
 //! - When Autumn marks the shutdown, a watch task flushes the database. The database stays open for the drain.
 //! - The shutdown hook closes the database. Autumn runs it after the drain.
 //! - The readiness check and the metrics source use the same handle.
+//! - The plugin declares a contract for `autumn-web` 0.8. `autumn plugin-check` reads it.
 
 use std::borrow::Cow;
 use std::sync::{Arc, OnceLock};
@@ -17,6 +18,7 @@ use std::sync::{Arc, OnceLock};
 use autumn_web::actuator::{MetricFamily, MetricsSource};
 use autumn_web::app::AppBuilder;
 use autumn_web::plugin::Plugin;
+use autumn_web::plugin_contract::PluginContract;
 use autumn_web::{AppState, AutumnError};
 
 use crate::cache::RocksCache;
@@ -30,6 +32,9 @@ use crate::session::RocksSessionStore;
 
 /// The plugin name in Autumn diagnostics.
 pub const PLUGIN_NAME: &str = "autumn-plugin-rocksdb";
+
+/// The `autumn-web` series that this plugin supports.
+const AUTUMN_WEB_RANGE: &str = "0.8";
 
 /// The interval of the shutdown watch.
 const SHUTDOWN_WATCH: std::time::Duration = std::time::Duration::from_millis(200);
@@ -151,6 +156,14 @@ impl RocksDbPlugin {
 impl Plugin for RocksDbPlugin {
     fn name(&self) -> Cow<'static, str> {
         Cow::Borrowed(PLUGIN_NAME)
+    }
+
+    fn contract(&self) -> Option<PluginContract> {
+        Some(
+            PluginContract::new(PLUGIN_NAME)
+                .plugin_version(env!("CARGO_PKG_VERSION"))
+                .autumn_web(AUTUMN_WEB_RANGE),
+        )
     }
 
     fn build(self, app: AppBuilder) -> AppBuilder {

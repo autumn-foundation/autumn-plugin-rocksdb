@@ -146,3 +146,22 @@ async fn the_metrics_source_after_close_has_counters_only() {
     assert!(names.contains(&"rocksdb_calls_total".to_owned()));
     assert!(!names.contains(&"rocksdb_estimated_keys".to_owned()));
 }
+
+#[test]
+fn contract_declares_the_autumn_web_range() {
+    let contract = RocksDbPlugin::new().contract().expect("contract");
+    assert_eq!(contract.plugin, "autumn-plugin-rocksdb");
+    assert_eq!(
+        contract.plugin_version.as_deref(),
+        Some(env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(contract.autumn_web.as_deref(), Some("0.8"));
+    let verdict = autumn_web::plugin_contract::evaluate(
+        &contract,
+        autumn_web::plugin_contract::AUTUMN_WEB_VERSION,
+    );
+    assert_eq!(
+        verdict,
+        autumn_web::plugin_contract::ContractVerdict::Compatible
+    );
+}

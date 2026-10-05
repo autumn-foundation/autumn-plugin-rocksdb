@@ -25,7 +25,7 @@ zlib = ["rocksdb/zlib"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.
-autumn-web = { version = ">=0.7, <0.8", default-features = false }
+autumn-web = { version = ">=0.8, <0.9", default-features = false }
 axum = { version = "0.8", default-features = false }
 http = "1"
 rocksdb = { version = "0.25", default-features = false, features = ["bindgen-runtime"] }
