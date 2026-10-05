@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Autumn 0.8: the `autumn-web` range is now `>=0.8, <0.9`.
+- `RocksDbPlugin` declares a `Plugin::contract` for `autumn plugin-check`.
+
 ## 0.1.0 (2026-09-29)
 
 - `RocksDbPlugin`, the `RocksDb` extractor and `RocksDb::from_state`.

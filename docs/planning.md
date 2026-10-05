@@ -73,7 +73,7 @@ Question: "How can we make this plugin fail?" Each answer gives a countermeasure
 
 ### White hat (facts)
 
-- Autumn 0.7 gives `Plugin`, `on_startup`, `on_shutdown`, `health_indicator`, `metrics_source`, `config_section` and `with_session_store`.
+- Autumn 0.8 gives `Plugin`, `contract`, `on_startup`, `on_shutdown`, `health_indicator`, `metrics_source`, `config_section` and `with_session_store`.
 - `AppState::set_cache` installs a global cache during startup. The `Cache` trait is synchronous.
 - The `SessionStore` trait is async. It gets no TTL. The Autumn session config has `max_age_secs`.
 - The `rocksdb` crate 0.25 wraps RocksDB 11. It builds RocksDB from C++ source. The MSRV is 1.88.

@@ -4,7 +4,7 @@ Guidance for agents that work on this crate.
 
 ## What this crate is
 
-`autumn-plugin-rocksdb` is an Autumn plugin. Autumn is `autumn-web` 0.7. Handlers use RocksDB through the `RocksDb` extractor. The plugin can also be the app cache and the session store. Read `docs/planning.md` before a design change.
+`autumn-plugin-rocksdb` is an Autumn plugin. Autumn is `autumn-web` 0.8. Handlers use RocksDB through the `RocksDb` extractor. The plugin can also be the app cache and the session store. Read `docs/planning.md` before a design change.
 
 ## Commands
 
