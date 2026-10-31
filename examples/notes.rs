@@ -25,12 +25,14 @@ async fn write(db: RocksDb, Path(id): Path<u64>, body: String) -> AutumnResult<&
 
 #[autumn_web::main]
 async fn main() {
-    autumn_web::app()
-        .plugin(RocksDbPlugin::new().configure(|c| {
-            c.path = "target/notes-rocksdb".into();
-            c.column_families = vec!["notes".into()];
-        }))
-        .routes(routes![read, write])
-        .run()
-        .await;
+    Box::pin(
+        autumn_web::app()
+            .plugin(RocksDbPlugin::new().configure(|c| {
+                c.path = "target/notes-rocksdb".into();
+                c.column_families = vec!["notes".into()];
+            }))
+            .routes(routes![read, write])
+            .run(),
+    )
+    .await;
 }

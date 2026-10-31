@@ -1,6 +1,6 @@
 [package]
 name = "autumn-plugin-rocksdb"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Autumn plugin: a RocksDB key-value store, cache and session store for Autumn apps."
@@ -25,7 +25,7 @@ zlib = ["rocksdb/zlib"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.
-autumn-web = { version = ">=0.8, <0.9", default-features = false }
+autumn-web = { version = ">=0.9, <0.10", default-features = false }
 axum = { version = "0.8", default-features = false }
 http = "1"
 rocksdb = { version = "0.25", default-features = false, features = ["bindgen-runtime"] }

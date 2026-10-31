@@ -155,7 +155,7 @@ fn contract_declares_the_autumn_web_range() {
         contract.plugin_version.as_deref(),
         Some(env!("CARGO_PKG_VERSION"))
     );
-    assert_eq!(contract.autumn_web.as_deref(), Some("0.8"));
+    assert_eq!(contract.autumn_web.as_deref(), Some("0.9"));
     let verdict = autumn_web::plugin_contract::evaluate(
         &contract,
         autumn_web::plugin_contract::AUTUMN_WEB_VERSION,
