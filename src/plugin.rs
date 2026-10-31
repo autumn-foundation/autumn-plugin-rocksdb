@@ -34,7 +34,7 @@ use crate::session::RocksSessionStore;
 pub const PLUGIN_NAME: &str = "autumn-plugin-rocksdb";
 
 /// The `autumn-web` series that this plugin supports.
-const AUTUMN_WEB_RANGE: &str = "0.8";
+const AUTUMN_WEB_RANGE: &str = "0.9";
 
 /// The interval of the shutdown watch.
 const SHUTDOWN_WATCH: std::time::Duration = std::time::Duration::from_millis(200);

@@ -2,11 +2,16 @@
 
 ## Unreleased
 
-- Autumn 0.8: the `autumn-web` range is now `>=0.8, <0.9`.
-- `RocksDbPlugin` declares a `Plugin::contract` for `autumn plugin-check`.
+## 0.2.0 — 2026-10-31
+
+### Changed
+
+- Support `autumn-web` 0.9. The plugin now needs `autumn-web` 0.9.
 
 ## 0.1.0 (2026-09-29)
 
+- Autumn 0.8: the `autumn-web` range is now `>=0.8, <0.9`.
+- `RocksDbPlugin` declares a `Plugin::contract` for `autumn plugin-check`.
 - `RocksDbPlugin`, the `RocksDb` extractor and `RocksDb::from_state`.
 - `RocksDbConfig`: the `[rocksdb]` section, profiles, `AUTUMN_ROCKSDB__*` variables and validation. `config_section`, `config` and `configure`.
 - `RocksDb` and `Keyspace`: `get`, `get_json`, `exists`, `put`, `put_json` and `delete`.
