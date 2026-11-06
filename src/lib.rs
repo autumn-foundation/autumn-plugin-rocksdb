@@ -77,3 +77,8 @@ pub use plugin::{PLUGIN_NAME, RocksDbPlugin};
 /// The `rocksdb` crate that the plugin uses. Use it in setup hooks and in `with_db`.
 pub use rocksdb;
 pub use session::RocksSessionStore;
+
+/// Compiles the Rust snippets of the README as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
