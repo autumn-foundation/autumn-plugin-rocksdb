@@ -17,7 +17,7 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [RocksDB](ht
 autumn-plugin-rocksdb = "0.3"
 ```
 
-```rust,ignore
+```rust,no_run
 use autumn_plugin_rocksdb::{RocksDb, RocksDbPlugin, RocksDbResultExt as _};
 use autumn_web::prelude::*;
 
@@ -98,22 +98,36 @@ Use `RocksDbPlugin::config` to give a configuration in code. Use `RocksDbPlugin:
 
 The methods of `RocksDb` use the `default` column family. `db.cf("name")` gives a `Keyspace` for another column family. Add each column family to `column_families`.
 
-```rust,ignore
-db.put("user:1", "Ada").await?;
-let name = db.get("user:1").await?;           // Option<Vec<u8>>
-db.cf("profiles").put_json("user:1", &profile).await?;
-db.delete("user:1").await?;
+```rust,no_run
+use autumn_plugin_rocksdb::{RocksDb, RocksDbError};
+
+#[derive(serde::Serialize)]
+struct Profile {
+    name: String,
+}
+
+async fn writes(db: &RocksDb, profile: &Profile) -> Result<(), RocksDbError> {
+    db.put("user:1", "Ada").await?;
+    let name = db.get("user:1").await?;           // Option<Vec<u8>>
+    db.cf("profiles").put_json("user:1", profile).await?;
+    db.delete("user:1").await?;
+    Ok(())
+}
 ```
 
 A batch writes all entries or none:
 
-```rust,ignore
-db.batch()
-    .put("a", "1")
-    .put_in("profiles", "b", "2")
-    .delete("old")
-    .commit()
-    .await?;
+```rust,no_run
+use autumn_plugin_rocksdb::{RocksDb, RocksDbError};
+
+async fn batch(db: &RocksDb) -> Result<(), RocksDbError> {
+    db.batch()
+        .put("a", "1")
+        .put_in("profiles", "b", "2")
+        .delete("old")
+        .commit()
+        .await
+}
 ```
 
 A write that times out after it starts can still complete. Its outcome is unknown. A write that times out before it starts never runs.
@@ -122,21 +136,33 @@ A write that times out after it starts can still complete. Its outcome is unknow
 
 A scan reads one page in key order. `Page::next` is the cursor of the next page. It is `None` when no entry is left.
 
-```rust,ignore
-let mut cursor = None;
-loop {
-    let mut scan = db.scan().prefix("user:").limit(100);
-    if let Some(after) = cursor.take() {
-        scan = scan.after(after);
+```rust,no_run
+use autumn_plugin_rocksdb::{RocksDb, RocksDbError};
+
+#[derive(serde::Deserialize)]
+struct Profile {
+    name: String,
+}
+
+async fn names(db: &RocksDb) -> Result<Vec<String>, RocksDbError> {
+    let mut names = Vec::new();
+    let mut cursor = None;
+    loop {
+        let mut scan = db.scan().prefix("user:").limit(100);
+        if let Some(after) = cursor.take() {
+            scan = scan.after(after);
+        }
+        let page = scan.fetch().await?;
+        for entry in &page.entries {
+            let profile: Profile = entry.value_as()?;
+            names.push(profile.name);
+        }
+        match page.next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
     }
-    let page = scan.fetch().await?;
-    for entry in &page.entries {
-        let profile: Profile = entry.value_as()?;
-    }
-    match page.next {
-        Some(next) => cursor = Some(next),
-        None => break,
-    }
+    Ok(names)
 }
 ```
 
@@ -161,14 +187,20 @@ The cache and the sessions use the reserved column families `autumn_cache` and `
 
 A setup hook runs at startup, before the first request. A failed hook stops the boot.
 
-```rust,ignore
-RocksDbPlugin::new().setup(|db| db.put(b"schema_version", b"1"))
+```rust,no_run
+use autumn_plugin_rocksdb::RocksDbPlugin;
+
+let plugin = RocksDbPlugin::new().setup(|db| db.put(b"schema_version", b"1"));
 ```
 
 `with_db` gives the full `rocksdb` API on a blocking thread, for example for a snapshot. The timeout and the call limit apply. `sync_writes` does not apply to writes in `with_db` or in setup hooks.
 
-```rust,ignore
-let value = db.with_db(|db| db.snapshot().get(b"key")).await?;
+```rust,no_run
+use autumn_plugin_rocksdb::{RocksDb, RocksDbError};
+
+async fn read_snapshot(db: &RocksDb) -> Result<Option<Vec<u8>>, RocksDbError> {
+    db.with_db(|db| db.snapshot().get(b"key")).await
+}
 ```
 
 `checkpoint` makes a consistent copy of a file database, for example for a backup. The directory must not exist. On Unix, the copy has mode `0700`. The copy holds all data, so keep it safe.
