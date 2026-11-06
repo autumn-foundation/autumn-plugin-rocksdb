@@ -103,7 +103,7 @@ async fn an_expired_entry_is_a_miss() {
 async fn an_entry_gets_its_ttl() {
     let (cache, db) = cache_with(|_| {}).await;
     let before = envelope::now_ms();
-    insert_cached(&cache, "k", 1_u8, Some(Duration::from_secs(60)));
+    insert_cached(&cache, "k", 1_u8, Some(Duration::from_mins(1)));
     let expiry = stored_expiry(&db, "k").unwrap();
     assert!(expiry >= before + 60_000 && expiry <= envelope::now_ms() + 60_000);
 }
@@ -113,7 +113,7 @@ async fn cache_ttl_secs_caps_each_ttl() {
     let (cache, db) = cache_with(|c| c.cache_ttl_secs = 10).await;
     let before = envelope::now_ms();
     cache.insert_value("none", Arc::new(1_i64));
-    insert_cached(&cache, "long", 1_u8, Some(Duration::from_secs(3600)));
+    insert_cached(&cache, "long", 1_u8, Some(Duration::from_hours(1)));
     for key in ["none", "long"] {
         let expiry = stored_expiry(&db, key).expect("each entry expires");
         assert!(expiry >= before + 10_000, "{key}");

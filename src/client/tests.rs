@@ -415,7 +415,7 @@ async fn a_timed_out_call_keeps_its_slot_until_it_ends() {
     })
     .await;
     let slow = db.with_db(|_| {
-        std::thread::sleep(Duration::from_millis(1000));
+        std::thread::sleep(Duration::from_secs(1));
         Ok(())
     });
     assert!(matches!(slow.await, Err(RocksDbError::Timeout { .. })));
@@ -424,7 +424,7 @@ async fn a_timed_out_call_keeps_its_slot_until_it_ends() {
         db.get("k").await,
         Err(RocksDbError::Timeout { .. })
     ));
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(db.get("k").await.unwrap(), None);
 }
 

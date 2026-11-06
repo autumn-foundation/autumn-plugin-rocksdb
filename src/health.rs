@@ -31,7 +31,7 @@ pub(crate) struct DatabaseCheck {
 pub(crate) const CHECK_WAIT: Duration = Duration::from_secs(1);
 
 /// A background error counts as recent for this time.
-const ERROR_WINDOW: Duration = Duration::from_secs(60);
+const ERROR_WINDOW: Duration = Duration::from_mins(1);
 
 /// Finds out if the background error count grew recently.
 #[derive(Debug, Default)]
