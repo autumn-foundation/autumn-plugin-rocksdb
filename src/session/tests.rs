@@ -9,7 +9,7 @@ use super::*;
 use crate::config::RocksDbConfig;
 use crate::envelope;
 
-const HOUR: Duration = Duration::from_secs(3600);
+const HOUR: Duration = Duration::from_hours(1);
 
 async fn db_with(change: impl FnOnce(&mut RocksDbConfig)) -> RocksDb {
     let mut config = RocksDbConfig::default();

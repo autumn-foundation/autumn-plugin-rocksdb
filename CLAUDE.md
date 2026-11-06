@@ -4,7 +4,7 @@ Guidance for agents that work on this crate.
 
 ## What this crate is
 
-`autumn-plugin-rocksdb` is an Autumn plugin. Autumn is `autumn-web` 0.9. Handlers use RocksDB through the `RocksDb` extractor. The plugin can also be the app cache and the session store. Read `docs/planning.md` before a design change.
+`autumn-plugin-rocksdb` is an Autumn plugin. Autumn is `autumn-web` 0.10. Handlers use RocksDB through the `RocksDb` extractor. The plugin can also be the app cache and the session store. Read `docs/planning.md` before a design change.
 
 ## Commands
 
@@ -13,13 +13,13 @@ cargo fmt --all -- --check
 cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo check --locked --lib --no-default-features
 cargo test --locked --all-targets --all-features
-cargo +1.88.0 check --locked --all-targets --all-features
+cargo +1.97 check --locked --all-targets --all-features
 cargo test --locked --doc --all-features
 RUSTDOCFLAGS=-D\ warnings cargo doc --locked --no-deps --all-features
 cargo llvm-cov --locked --all-features --ignore-filename-regex '/tests\.rs$' --fail-under-lines 90
 ```
 
-The MSRV is 1.88. The first build compiles RocksDB from C++ source. It takes 10 to 15 minutes on 4 CPU cores. Each new feature set or toolchain builds it again, and each build uses approximately 5 GB of disk. Use `--all-features` for each local command.
+The MSRV is 1.97. The first build compiles RocksDB from C++ source. It takes 10 to 15 minutes on 4 CPU cores. Each new feature set or toolchain builds it again, and each build uses approximately 5 GB of disk. Use `--all-features` for each local command.
 
 ## Architecture
 

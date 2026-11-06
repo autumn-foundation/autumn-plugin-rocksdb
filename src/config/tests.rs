@@ -416,7 +416,7 @@ fn a_compression_that_is_not_built_in_is_an_error() {
 #[test]
 fn session_ttl_prefers_the_plugin_value() {
     let mut config = RocksDbConfig::default();
-    assert_eq!(config.session_ttl(600), Duration::from_secs(600));
+    assert_eq!(config.session_ttl(600), Duration::from_mins(10));
     config.session_ttl_secs = Some(30);
     assert_eq!(config.session_ttl(600), Duration::from_secs(30));
 }

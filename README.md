@@ -14,7 +14,7 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [RocksDB](ht
 
 ```toml
 [dependencies]
-autumn-plugin-rocksdb = "0.2"
+autumn-plugin-rocksdb = "0.3"
 ```
 
 ```rust,ignore
