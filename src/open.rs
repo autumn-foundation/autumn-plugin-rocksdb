@@ -37,6 +37,9 @@ pub const CACHE_CF: &str = "autumn_cache";
 /// The column family of [`RocksSessionStore`](crate::RocksSessionStore).
 pub const SESSIONS_CF: &str = "autumn_sessions";
 
+/// The column family of the fleet identity: the key name and the epoch.
+pub const FLEET_CF: &str = "autumn_fleet";
+
 /// The largest info log file of an in-memory database.
 const MEMORY_LOG_BYTES: usize = 1024 * 1024;
 
@@ -189,10 +192,14 @@ fn column_family_names(
     {
         return Err(RocksDbError::UnknownColumnFamily { name: name.clone() });
     }
-    let reserved = [(config.cache, CACHE_CF), (config.sessions, SESSIONS_CF)]
-        .into_iter()
-        .filter(|(used, _)| *used)
-        .map(|(_, name)| name.to_owned());
+    let reserved = [
+        (config.cache, CACHE_CF),
+        (config.sessions, SESSIONS_CF),
+        (config.fleet_identity, FLEET_CF),
+    ]
+    .into_iter()
+    .filter(|(used, _)| *used)
+    .map(|(_, name)| name.to_owned());
     for name in existing
         .into_iter()
         .chain(config.column_families.iter().cloned())

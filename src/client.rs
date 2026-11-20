@@ -541,6 +541,52 @@ impl RocksDb {
             .await;
     }
 
+    /// Closes the handle at once, on the calling thread. The fleet calls it.
+    ///
+    /// New calls fail. A writable file database gets a flush if `flush_on_shutdown` is `true`.
+    /// RocksDB closes the database when the last open call ends.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn close_now(&self) {
+        let inner = &*self.inner;
+        inner.shutting_down.store(true, Ordering::Release);
+        inner.permits.close();
+        let db = inner
+            .db
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(db) = db
+            && inner.config.flush_on_shutdown
+            && self.needs_flush()
+            && let Err(err) = flush_all(&db, &inner.column_families)
+        {
+            tracing::warn!(kind = ?RocksDbError::from(err).kind(), "the RocksDB flush at the close failed");
+        }
+    }
+
+    /// Returns `true` while a call runs.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn is_busy(&self) -> bool {
+        let max = self.inner.config.max_concurrent_calls;
+        self.inner.permits.available_permits() < max
+    }
+
+    /// Returns `true` after a close.
+    #[cfg(feature = "fleet")]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.shutting_down.load(Ordering::Acquire)
+    }
+
+    /// Runs `work` with a call slot. The size limits and the reserved names do not apply.
+    #[cfg(feature = "fleet")]
+    pub(crate) async fn internal<T, F>(&self, work: F) -> Result<T, RocksDbError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Database) -> Result<T, RocksDbError> + Send + 'static,
+    {
+        self.call(work).await
+    }
+
     /// Runs `work` on a blocking thread with a call slot and a deadline.
     async fn call<T, F>(&self, work: F) -> Result<T, RocksDbError>
     where

@@ -1,6 +1,6 @@
 [package]
 name = "autumn-plugin-rocksdb"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.97"
 description = "Autumn plugin: a RocksDB key-value store, cache and session store for Autumn apps."
@@ -22,10 +22,12 @@ zstd = ["rocksdb/zstd"]
 snappy = ["rocksdb/snappy"]
 # Builds the zlib compression library into RocksDB. It reads files from other tools.
 zlib = ["rocksdb/zlib"]
+# A fleet of RocksDB databases: one database for each tenant or slot.
+fleet = ["autumn-web/db"]
 
 [dependencies]
 # No default features: the host app selects the Autumn features.
-autumn-web = { version = ">=0.10, <0.11", default-features = false }
+autumn-web = { version = ">=0.11, <0.12", default-features = false }
 axum = { version = "0.8", default-features = false }
 http = "1"
 rocksdb = { version = "0.25", default-features = false, features = ["bindgen-runtime"] }
@@ -38,12 +40,14 @@ toml = "1.1"
 tracing = "0.1"
 
 [dev-dependencies]
+autumn-web = { version = ">=0.11, <0.12", default-features = false, features = ["plugin-conformance", "sqlite"] }
 proptest = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "test-util"] }
 
 [package.metadata.docs.rs]
-all-features = true
+# `fleet` needs an Autumn database backend. The app selects it.
+features = ["lz4", "zstd", "snappy", "zlib", "fleet", "autumn-web/sqlite"]
 
 [lints.rust]
 unsafe_code = "forbid"
