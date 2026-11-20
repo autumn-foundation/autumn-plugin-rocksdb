@@ -150,6 +150,9 @@ pub struct RocksDbConfig {
     pub compression: Compression,
     /// The bloom filter bits for each key. `0` turns the bloom filter off.
     pub bloom_filter_bits: u32,
+    /// If `true`, the open makes the reserved fleet column family. A fleet sets it.
+    #[serde(skip)]
+    pub(crate) fleet_identity: bool,
 }
 
 impl Default for RocksDbConfig {
@@ -179,6 +182,7 @@ impl Default for RocksDbConfig {
             max_background_jobs: None,
             compression: Compression::default(),
             bloom_filter_bits: 10,
+            fleet_identity: false,
         }
     }
 }
@@ -253,24 +257,7 @@ impl RocksDbConfig {
     ///
     /// See [`resolve`](Self::resolve).
     pub fn resolve_with_env(section: &str, env: &dyn Env) -> Result<Self, ConfigError> {
-        let (selected, profile) = active_profile(env);
-        let mut merged = toml::Table::new();
-        if let Some(base) = read_toml(&config_file("autumn.toml", env))? {
-            merge_section(&mut merged, base.get(section), section)?;
-            for name in inline_profile_names(&profile) {
-                let inline = base
-                    .get("profile")
-                    .and_then(|p| p.get(name))
-                    .and_then(|p| p.get(section));
-                merge_section(&mut merged, inline, section)?;
-            }
-        }
-        for name in autumn_web::config::profile_override_file_lookup_names(&profile, &selected) {
-            if let Some(file) = read_toml(&config_file(&format!("autumn-{name}.toml"), env))? {
-                merge_section(&mut merged, file.get(section), section)?;
-                break;
-            }
-        }
+        let mut merged = layered_section(section, env)?;
         apply_env(&mut merged, section, env)?;
         let config: Self = toml::Value::Table(merged)
             .try_into()
@@ -415,6 +402,30 @@ impl RocksDbConfig {
     pub(crate) fn session_ttl(&self, autumn_max_age_secs: u64) -> Duration {
         Duration::from_secs(self.session_ttl_secs.unwrap_or(autumn_max_age_secs).max(1))
     }
+}
+
+/// Merges `[section]` from `autumn.toml`, its inline profile and `autumn-<profile>.toml`.
+/// It applies no variables.
+pub(crate) fn layered_section(section: &str, env: &dyn Env) -> Result<toml::Table, ConfigError> {
+    let (selected, profile) = active_profile(env);
+    let mut merged = toml::Table::new();
+    if let Some(base) = read_toml(&config_file("autumn.toml", env))? {
+        merge_section(&mut merged, base.get(section), section)?;
+        for name in inline_profile_names(&profile) {
+            let inline = base
+                .get("profile")
+                .and_then(|p| p.get(name))
+                .and_then(|p| p.get(section));
+            merge_section(&mut merged, inline, section)?;
+        }
+    }
+    for name in autumn_web::config::profile_override_file_lookup_names(&profile, &selected) {
+        if let Some(file) = read_toml(&config_file(&format!("autumn-{name}.toml"), env))? {
+            merge_section(&mut merged, file.get(section), section)?;
+            break;
+        }
+    }
+    Ok(merged)
 }
 
 /// Gives the selected profile text and the normalized profile, as Autumn does.

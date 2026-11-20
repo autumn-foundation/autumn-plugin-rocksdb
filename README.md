@@ -14,7 +14,7 @@ An [Autumn](https://github.com/autumn-foundation/autumn) plugin for [RocksDB](ht
 
 ```toml
 [dependencies]
-autumn-plugin-rocksdb = "0.3"
+autumn-plugin-rocksdb = "0.4"
 ```
 
 ```rust,no_run
@@ -218,6 +218,68 @@ async fn read_snapshot(db: &RocksDb) -> Result<Option<Vec<u8>>, RocksDbError> {
 | All others | 500 |
 
 The error text and the `Debug` output never show a RocksDB message, because it can hold a file path. `detail()` gives the full message. Do not show it to users. `kind()` gives the `ErrorKind`.
+
+## Fleets
+
+The `fleet` feature gives each tenant (or each slot) its own RocksDB database. Autumn core runs the fleet: keys, paths, opens, idle closes, the memory budget, slot ownership and fencing. The plugin gives the RocksDB engine and the `FleetRocksDb` extractor. The fleet needs an Autumn database backend: turn on the `postgres` or the `sqlite` feature of `autumn-web`.
+
+```toml
+[dependencies]
+autumn-plugin-rocksdb = { version = "0.4", features = ["fleet"] }
+```
+
+```rust,no_run
+# #[cfg(feature = "fleet")]
+# mod example {
+use autumn_plugin_rocksdb::fleet::{FleetRocksDb, RocksDbFleetPlugin};
+use autumn_plugin_rocksdb::RocksDbResultExt as _;
+use autumn_web::prelude::*;
+
+#[get("/visits")]
+async fn visits(db: FleetRocksDb) -> AutumnResult<String> {
+    let count = db.get_json::<u64>("visits").await.or_http()?.unwrap_or(0) + 1;
+    db.put_json("visits", &count).await.or_http()?;
+    Ok(count.to_string())
+}
+
+pub async fn run() {
+    autumn_web::app()
+        .plugin(RocksDbFleetPlugin::new())
+        .routes(routes![visits])
+        .run()
+        .await;
+}
+# }
+# fn main() {}
+```
+
+The plugin reads `[rocksdb_fleet]`. The top keys are the Autumn fleet keys, as in `[database.fleet]`. `engine` has the `[rocksdb]` keys, except `path`, `cache` and `sessions`:
+
+```toml
+[rocksdb_fleet]
+mode = "tenant"                      # one database for each tenant; "slot" gives one for each slot
+root = "data/tenants"
+create_on_demand = true
+max_resident_bytes = 4294967296      # the memory budget of all open databases
+ship_every_secs = 60                 # the interval between two replica generations
+resident_bytes = 134217728           # the memory that one open database counts
+
+[rocksdb_fleet.engine]
+column_families = ["orders"]
+block_cache_bytes = 16777216
+write_buffer_bytes = 16777216
+
+[rocksdb_fleet.ownership]
+owner = "host-a"
+```
+
+`AUTUMN_ROCKSDB_FLEET__ROOT` and `AUTUMN_ROCKSDB_FLEET__OWNERSHIP__OWNER` set `root` and `ownership.owner`.
+
+- The extractor opens the database of the request tenant. It gives `400` with no tenant and `421` when another host owns the slot. In a job, use `FleetRocksDb::for_key(&state, tenant)`.
+- Each database has the column family `autumn_fleet` (`FLEET_CF`). It holds the tenant key and the ownership epoch. A database of another key, or of a newer epoch, does not open. The user API refuses this column family.
+- A snapshot of an open database is a RocksDB checkpoint. A snapshot of a closed database copies its files, without `LOCK` and the info logs.
+- The plugin closes idle databases, and all databases at shutdown, in each role.
+- The engine passes the Autumn fleet conformance kit (`autumn_web::plugin_conformance::fleet`).
 
 ## Operations
 

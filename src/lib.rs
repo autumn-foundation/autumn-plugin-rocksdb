@@ -62,6 +62,8 @@ mod client;
 pub mod config;
 mod envelope;
 mod error;
+#[cfg(feature = "fleet")]
+pub mod fleet;
 mod health;
 mod metrics;
 mod open;
@@ -72,7 +74,7 @@ pub use cache::RocksCache;
 pub use client::{Batch, Entry, Keyspace, Page, RocksDb, Scan};
 pub use config::{AccessMode, Compression, ConfigError, RocksDbConfig};
 pub use error::{ErrorKind, RocksDbError, RocksDbResultExt};
-pub use open::{CACHE_CF, Database, SESSIONS_CF};
+pub use open::{CACHE_CF, Database, FLEET_CF, SESSIONS_CF};
 pub use plugin::{PLUGIN_NAME, RocksDbPlugin};
 /// The `rocksdb` crate that the plugin uses. Use it in setup hooks and in `with_db`.
 pub use rocksdb;

@@ -4,7 +4,7 @@ Guidance for agents that work on this crate.
 
 ## What this crate is
 
-`autumn-plugin-rocksdb` is an Autumn plugin. Autumn is `autumn-web` 0.10. Handlers use RocksDB through the `RocksDb` extractor. The plugin can also be the app cache and the session store. Read `docs/planning.md` before a design change.
+`autumn-plugin-rocksdb` is an Autumn plugin. Autumn is `autumn-web` 0.11. Handlers use RocksDB through the `RocksDb` extractor. The plugin can also be the app cache and the session store. Read `docs/planning.md` before a design change.
 
 ## Commands
 
@@ -36,6 +36,7 @@ The MSRV is 1.97. The first build compiles RocksDB from C++ source. It takes 10 
 | `session` | glue | `RocksSessionStore`: the Autumn `SessionStore` backend. |
 | `plugin` | glue | `RocksDbPlugin`, the extractor and the metrics source. |
 | `health` | glue | The readiness check. |
+| `fleet` | glue | `RocksDbEngine`, `RocksDbFleetPlugin` and `FleetRocksDb` (feature `fleet`): one database for each tenant or slot. |
 
 Each module has a `# Contract` doc section. Change the contract first. Then change the tests. Then change the code.
 
